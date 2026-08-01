@@ -14,14 +14,23 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import signal
+import sys
 import time
 
 import websockets
 import yaml
 
-from backfill import backfill
-from writer import WriterPool
+from .backfill import backfill
+from .gaps import GapRecorder
+from .parsing import coin_of, exch_ts_of, truncate_book
+from .writer import WriterPool
+
+# Ri-esportati: erano definiti qui prima di essere isolati in parsing.py, e
+# restano importabili da questo modulo per non rompere chi li importava.
+__all__ = ["Collector", "build_subscriptions", "coin_of", "exch_ts_of",
+           "truncate_book", "main"]
 
 WS_URL = {
     "mainnet": "wss://api.hyperliquid.xyz/ws",
@@ -55,50 +64,9 @@ def build_subscriptions(cfg: dict) -> list[dict]:
     return subs
 
 
-def coin_of(channel: str, data) -> str:
-    """Estrae il simbolo dal payload. Ogni canale lo mette in un posto diverso."""
-    if channel in ("l2Book", "bbo", "activeAssetCtx"):
-        return data.get("coin", "") if isinstance(data, dict) else ""
-    if channel == "trades":
-        if isinstance(data, list) and data:
-            return data[0].get("coin", "")
-        return ""
-    if channel == "candle":
-        # le candele usano chiavi corte: s = symbol, t = open time
-        if isinstance(data, dict):
-            return data.get("s", "")
-        if isinstance(data, list) and data:
-            return data[0].get("s", "")
-    return ""
-
-
-def exch_ts_of(channel: str, data) -> int:
-    """Timestamp dichiarato dall'exchange, in ms. 0 se il canale non lo espone."""
-    try:
-        if channel == "l2Book":
-            return int(data.get("time", 0))
-        if channel == "trades":
-            return int(data[0].get("time", 0)) if data else 0
-        if channel == "candle":
-            d = data[0] if isinstance(data, list) else data
-            return int(d.get("t", 0))
-        if channel == "userFills":
-            fills = data.get("fills") or []
-            return int(fills[0].get("time", 0)) if fills else 0
-    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
-        return 0
-    return 0
-
-
-def truncate_book(data: dict, depth: int) -> dict:
-    """l2Book e' uno SNAPSHOT completo a ogni push. Tagliare la profondita'
-    riduce lo storage di un ordine di grandezza senza perdere nulla di utile
-    per strategie che non fanno market making."""
-    levels = data.get("levels")
-    if isinstance(levels, list) and len(levels) == 2:
-        data = dict(data)
-        data["levels"] = [levels[0][:depth], levels[1][:depth]]
-    return data
+def sub_key(sub: dict) -> str:
+    """Chiave stabile per confrontare una subscribe inviata con il suo ack."""
+    return "|".join(f"{k}={sub[k]}" for k in sorted(sub))
 
 
 class Collector:
@@ -112,10 +80,17 @@ class Collector:
             flush_seconds=cfg["writer"]["flush_seconds"],
             compression=cfg["writer"]["compression"],
         )
+        self.gaps = GapRecorder(
+            cfg.get("gaps_file") or os.path.join(cfg["data_dir"], "_gaps.jsonl")
+        )
         self.last_msg_at = 0.0
         self.last_by_channel: dict[str, float] = {}
         self.msg_count = 0
         self.stop = asyncio.Event()
+        self._ws = None
+        self._close_reason: str | None = None
+        self._acked: set[str] = set()
+        self._tasks: set[asyncio.Task] = set()
 
     async def run(self) -> None:
         tasks = [
@@ -129,7 +104,13 @@ class Collector:
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.gather(*tasks, return_exceptions=True)
         self.writer.flush_all()
+        # Da qui in poi non stiamo piu' raccogliendo: e' un buco a tutti gli
+        # effetti. Resta aperto nel registro e verra' chiuso dal prossimo avvio.
+        self.gaps.mark_disconnected("shutdown", self._subscribed_channels())
         log.info("stop pulito, righe scritte in sessione: %d", self.writer.rows_written)
+
+    def _subscribed_channels(self) -> list[str]:
+        return sorted({s["type"] for s in self.subs})
 
     async def _ws_loop(self) -> None:
         delay = 1.0
@@ -139,33 +120,69 @@ class Collector:
                 async with websockets.connect(
                     self.url, ping_interval=None, max_size=None, close_timeout=5
                 ) as ws:
+                    self._ws = ws
+                    self._acked = set()
                     log.info("connesso a %s", self.url)
                     for s in self.subs:
                         await ws.send(json.dumps({"method": "subscribe", "subscription": s}))
                     log.info("%d sottoscrizioni inviate", len(self.subs))
 
+                    closed = self.gaps.mark_connected()
+                    if closed is not None:
+                        log.warning("buco chiuso: %.1fs senza dati (%s)",
+                                    closed.duration_s or 0.0, closed.reason)
                     if not first:
                         # Ricuci il buco: le candele e il funding sono
                         # ricostruibili via REST, i trade tick-by-tick no.
-                        asyncio.create_task(self._backfill())
+                        self._spawn(self._backfill())
                     first = False
                     delay = 1.0
                     self.last_msg_at = time.monotonic()
 
                     ping = asyncio.create_task(self._ping(ws))
+                    audit = asyncio.create_task(self._audit_subscriptions())
                     try:
                         async for raw in ws:
                             self._handle(raw)
                     finally:
                         ping.cancel()
+                        audit.cancel()
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001 - il collector non deve mai morire
                 log.warning("ws caduto (%s: %s), riconnetto tra %.1fs",
                             type(e).__name__, e, delay)
+                self.gaps.mark_disconnected(f"{type(e).__name__}: {e}",
+                                            self._subscribed_channels())
+            else:
+                # Uscita dall'`async for` senza eccezione: chiusura pulita, dal
+                # server o dal watchdog. E' comunque un buco.
+                self.gaps.mark_disconnected(self._close_reason or "closed by server",
+                                            self._subscribed_channels())
+            finally:
+                self._ws = None
+                self._close_reason = None
             if not self.stop.is_set():
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 30.0)
+
+    def _spawn(self, coro) -> None:
+        """asyncio tiene solo una reference debole ai task: senza conservarla,
+        un task puo' sparire a meta' esecuzione per garbage collection."""
+        task = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _audit_subscriptions(self) -> None:
+        """Una subscribe rifiutata non interrompe niente: il collector resta su,
+        e quel canale semplicemente non arriva mai. Senza questo controllo te ne
+        accorgi settimane dopo, guardando una cartella vuota."""
+        await asyncio.sleep(self.cfg["watchdog"].get("subscription_ack_seconds", 15))
+        missing = [sub_key(s) for s in self.subs if sub_key(s) not in self._acked]
+        if missing:
+            log.error("%d sottoscrizioni senza ack: %s", len(missing), missing)
+        else:
+            log.info("tutte le %d sottoscrizioni confermate", len(self.subs))
 
     async def _ping(self, ws) -> None:
         interval = self.cfg["watchdog"]["ping_seconds"]
@@ -185,7 +202,13 @@ class Collector:
 
         channel = msg.get("channel", "")
         if channel in ("pong", "subscriptionResponse", "error"):
-            if channel == "error":
+            if channel == "subscriptionResponse":
+                # L'ack rimanda indietro {"method": .., "subscription": {..}}.
+                data = msg.get("data") or {}
+                sub = data.get("subscription") if isinstance(data, dict) else None
+                if isinstance(sub, dict) and data.get("method") != "unsubscribe":
+                    self._acked.add(sub_key(sub))
+            elif channel == "error":
                 log.error("errore dall'exchange: %s", msg.get("data"))
             return
 
@@ -206,9 +229,16 @@ class Collector:
             if self.last_msg_at and now - self.last_msg_at > w["global_silence_seconds"]:
                 # Silenzio totale = connessione zombie. Capita, e senza questo
                 # controllo il processo resta su a non fare niente per ore.
-                log.error("silenzio da %.0fs: la connessione e' morta senza chiudersi",
+                # Loggarlo non basta: va chiusa la socket, cosi' `async for`
+                # termina e `_ws_loop` riconnette da capo.
+                log.error("silenzio da %.0fs: chiudo la connessione e riconnetto",
                           now - self.last_msg_at)
                 self.last_msg_at = now
+                ws = self._ws
+                self._close_reason = f"watchdog: {w['global_silence_seconds']}s di silenzio"
+                if ws is not None:
+                    with contextlib.suppress(Exception):
+                        await ws.close()
             for ch, ts in list(self.last_by_channel.items()):
                 if now - ts > w["stale_warn_seconds"]:
                     log.warning("canale %s fermo da %.0fs", ch, now - ts)
@@ -223,13 +253,29 @@ class Collector:
             await asyncio.to_thread(backfill, self.cfg, self.writer)
 
 
+DEFAULT_CONFIG = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.yaml")
+
+
+def load_config(path: str | None = None) -> dict:
+    """Ordine: argomento esplicito, env HL_CONFIG, config.yaml accanto al
+    package. Prima veniva letto dalla cwd: sotto systemd, con la WorkingDirectory
+    sbagliata, il collector partiva con un FileNotFoundError invece che con i
+    default sicuri."""
+    path = path or os.environ.get("HL_CONFIG") or DEFAULT_CONFIG
+    with open(path) as f:
+        cfg = yaml.safe_load(f)
+    if cfg.get("network") not in WS_URL:
+        raise ValueError(f"network non valido in {path}: {cfg.get('network')!r}")
+    return cfg
+
+
 def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    with open("config.yaml") as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_config(sys.argv[1] if len(sys.argv) > 1 else None)
+    log.info("network=%s data_dir=%s", cfg["network"], cfg["data_dir"])
 
     c = Collector(cfg)
     loop = asyncio.new_event_loop()

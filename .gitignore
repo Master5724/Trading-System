@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.venv/
+
+# I dati raccolti non stanno in git: sono centinaia di MB al giorno, e il
+# registro dei buchi vive accanto a loro perche' senza i dati non significa
+# niente.
+data/
