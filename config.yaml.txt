@@ -1,0 +1,53 @@
+network: testnet          # testnet | mainnet
+data_dir: ./data
+
+# Solo major con book profondo. Aggiungerne altri costa storage, non insight.
+coins:
+  - BTC
+  - ETH
+  - SOL
+  - HYPE
+
+# Canali market-data per coin.
+#   trades          -> ogni esecuzione
+#   l2Book          -> snapshot del book (NON delta): un push per blocco, min 0.5s
+#   bbo             -> top of book, solo quando cambia (serve al modulo intraday futuro)
+#   activeAssetCtx  -> funding, open interest, mark price  <-- il piu' importante per lo swing
+#   candle 1m       -> ridondante ma utile come check di integrita' vs i trade
+per_coin_channels:
+  trades: true
+  l2Book: true
+  bbo: false            # attivalo quando inizi il ramo intraday
+  activeAssetCtx: true
+  candle: "1m"
+
+global_channels:
+  allMids: true
+
+# Stream utente: lasciali off finche' non hai una API wallet configurata.
+user_address: null
+user_channels:
+  userFills: true
+  orderUpdates: true
+  userFundings: true
+
+# Solo i primi N livelli per lato del book. 10 basta per swing; 20+ per intraday.
+l2_depth: 10
+
+writer:
+  flush_rows: 5000       # flush su parquet ogni N righe...
+  flush_seconds: 60      # ...o ogni N secondi, quale viene prima
+  compression: zstd
+
+watchdog:
+  # Se un canale tace piu' di questi secondi -> warning.
+  stale_warn_seconds: 120
+  # Se NESSUN messaggio arriva per questi secondi -> reconnect forzato.
+  global_silence_seconds: 45
+  ping_seconds: 30
+
+backfill:
+  # Dopo ogni riconnessione, ricuci i buchi via REST.
+  candle_interval: "1m"
+  candle_lookback_hours: 6
+  funding_lookback_hours: 48
