@@ -6,7 +6,14 @@ Collector 24/7 dei dati di mercato Hyperliquid. Fase 0: nessuna strategia, nessu
 
 ```bash
 pip install pyarrow pyyaml websockets duckdb
-python collector.py            # legge config.yaml dalla cwd
+python -m collector                      # config.yaml accanto al package
+python -m collector /etc/hl/config.yaml  # oppure percorso esplicito (o env HL_CONFIG)
+```
+
+Test (solo stdlib, non serve installare niente):
+
+```bash
+python -m unittest discover -s tests -v
 ```
 
 Parti su `network: testnet`. Passa a `mainnet` solo quando hai 24h di dati puliti
@@ -21,7 +28,7 @@ After=network-online.target
 
 [Service]
 WorkingDirectory=/opt/hl-collector
-ExecStart=/opt/hl-collector/.venv/bin/python collector.py
+ExecStart=/opt/hl-collector/.venv/bin/python -m collector
 Restart=always
 RestartSec=5
 
@@ -70,8 +77,24 @@ espone storicamente (candele, funding). Trade e book persi sono persi.
 
 Quindi: **registra le finestre di disconnessione ed escludile dal backtest.**
 Un backtest che gira su un'ora in cui mancava meta' del flusso non da' errore,
-da' un risultato falso e plausibile — che e' molto peggio. Il log del
-collector e' la fonte di verita': tienilo, non ruotarlo via.
+da' un risultato falso e plausibile — che e' molto peggio.
+
+Il collector le registra da solo in `data/_gaps.jsonl` (modulo `collector/gaps.py`):
+due righe per finestra, `open` all'istante del distacco e `close` alla
+riconnessione, con durata e canali coinvolti. Le si rilegge cosi':
+
+```python
+from collector.gaps import load_windows
+for g in load_windows("data/_gaps.jsonl"):
+    print(g.start_ms, g.end_ms, g.duration_s, g.reason, g.channels)
+```
+
+`end_ms is None` significa finestra mai chiusa — il processo e' morto mentre era
+scollegato. `Gap.covers(ts_ms)` la tratta come aperta fino a ora: e' il default
+conservativo, un periodo che non sappiamo classificare va scartato.
+
+Il log del collector resta comunque utile per il contesto: tienilo, non
+ruotarlo via.
 
 ## Storage
 
