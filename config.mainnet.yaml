@@ -1,5 +1,7 @@
 network: mainnet          # testnet | mainnet
-data_dir: ./data
+# Directory separata da quella di testnet: due reti hanno liquidita', volumi e
+# funding diversi, mescolarli renderebbe i dati inutilizzabili.
+data_dir: ./data-mainnet
 
 # Solo major con book profondo. Aggiungerne altri costa storage, non insight.
 coins:

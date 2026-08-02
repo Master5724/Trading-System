@@ -15,6 +15,11 @@ python -m collector --config /etc/hl/config.yaml # percorso esplicito (o env HL_
 puntare a mainnet per distrazione. `config.mainnet.yaml` e' identico tranne
 quella riga, e va scelto esplicitamente.
 
+I due profili scrivono in directory separate: `./data` contiene i dati testnet,
+`./data-mainnet` quelli mainnet. Non vanno mai mescolati: le due reti hanno
+liquidita', volumi e funding completamente diversi, e un catalogo che le
+leggesse insieme tratterebbe due popolazioni distinte come una sola.
+
 Test (solo stdlib, non serve installare niente):
 
 ```bash
