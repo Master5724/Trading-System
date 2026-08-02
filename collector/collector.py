@@ -25,6 +25,7 @@ import yaml
 from .acks import ack_matches, sub_key
 from .backfill import backfill
 from .gaps import GapRecorder
+from .netguard import NetworkMismatchError, claim_data_dir
 from .parsing import coin_of, exch_ts_of, truncate_book
 from .writer import WriterPool
 
@@ -68,6 +69,10 @@ def build_subscriptions(cfg: dict) -> list[dict]:
 
 class Collector:
     def __init__(self, cfg: dict):
+        # Prima di ogni altra cosa: WriterPool e GapRecorder creano directory e
+        # file dentro data_dir gia' in fase di costruzione. Se la rete non
+        # coincide dobbiamo fermarci prima che qualcuno tocchi il disco.
+        claim_data_dir(cfg["data_dir"], cfg["network"])
         self.cfg = cfg
         self.url = WS_URL[cfg["network"]]
         self.subs = build_subscriptions(cfg)
@@ -307,7 +312,13 @@ def main() -> None:
     cfg = load_config(args.config or args.config_pos)
     log.info("network=%s data_dir=%s", cfg["network"], cfg["data_dir"])
 
-    c = Collector(cfg)
+    try:
+        c = Collector(cfg)
+    except NetworkMismatchError as e:
+        # Un traceback qui non aggiunge niente: il messaggio dice gia' cosa
+        # fare. Exit non-zero perche' systemd deve registrarlo come fallimento.
+        log.error("%s", e)
+        raise SystemExit(2) from None
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     for sig in (signal.SIGINT, signal.SIGTERM):

@@ -1,7 +1,12 @@
 network: mainnet          # testnet | mainnet
 # Directory separata da quella di testnet: due reti hanno liquidita', volumi e
 # funding diversi, mescolarli renderebbe i dati inutilizzabili.
-data_dir: ./data-mainnet
+#
+# Percorso assoluto e fuori dal repo: la WorkingDirectory del servizio punta al
+# working tree di git, quindi un data_dir relativo farebbe crescere centinaia
+# di MB al giorno dentro il repo. Un .gitignore nasconderebbe il problema
+# senza risolverlo (checkout, clean, worktree continuerebbero a inciamparci).
+data_dir: /home/ubuntu/hl-data/mainnet
 
 # Solo major con book profondo. Aggiungerne altri costa storage, non insight.
 coins:
