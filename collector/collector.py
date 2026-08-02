@@ -25,6 +25,7 @@ import yaml
 from .acks import ack_matches, sub_key
 from .backfill import backfill
 from .gaps import GapRecorder
+from .instancelock import DataDirLock, DataDirLockedError
 from .netguard import NetworkMismatchError, claim_data_dir
 from .parsing import coin_of, exch_ts_of, truncate_book
 from .writer import WriterPool
@@ -73,6 +74,12 @@ class Collector:
         # file dentro data_dir gia' in fase di costruzione. Se la rete non
         # coincide dobbiamo fermarci prima che qualcuno tocchi il disco.
         claim_data_dir(cfg["data_dir"], cfg["network"])
+        # Subito dopo la rete e prima di qualunque socket o writer: due istanze
+        # con lo stesso config passano entrambe la guardia .network e
+        # duplicherebbero ogni riga. Il lock resta appeso all'oggetto per tutta
+        # la vita del processo, chiuderlo lo rilascerebbe.
+        self._lock = DataDirLock(cfg["data_dir"])
+        self._lock.acquire()
         self.cfg = cfg
         self.url = WS_URL[cfg["network"]]
         self.subs = build_subscriptions(cfg)
@@ -314,7 +321,7 @@ def main() -> None:
 
     try:
         c = Collector(cfg)
-    except NetworkMismatchError as e:
+    except (NetworkMismatchError, DataDirLockedError) as e:
         # Un traceback qui non aggiunge niente: il messaggio dice gia' cosa
         # fare. Exit non-zero perche' systemd deve registrarlo come fallimento.
         log.error("%s", e)
