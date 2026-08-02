@@ -6,9 +6,14 @@ Collector 24/7 dei dati di mercato Hyperliquid. Fase 0: nessuna strategia, nessu
 
 ```bash
 pip install pyarrow pyyaml websockets duckdb
-python -m collector                      # config.yaml accanto al package
-python -m collector /etc/hl/config.yaml  # oppure percorso esplicito (o env HL_CONFIG)
+python -m collector                              # config.yaml accanto al package (testnet)
+python -m collector --config config.mainnet.yaml # mainnet
+python -m collector --config /etc/hl/config.yaml # percorso esplicito (o env HL_CONFIG)
 ```
+
+`config.yaml` resta su `network: testnet`: il default del repo non deve poter
+puntare a mainnet per distrazione. `config.mainnet.yaml` e' identico tranne
+quella riga, e va scelto esplicitamente.
 
 Test (solo stdlib, non serve installare niente):
 

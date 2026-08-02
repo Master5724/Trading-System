@@ -10,13 +10,13 @@ il lato esecuzione, dove firma e nonce sono la parte difficile.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import contextlib
 import json
 import logging
 import os
 import signal
-import sys
 import time
 
 import websockets
@@ -279,12 +279,32 @@ def load_config(path: str | None = None) -> dict:
     return cfg
 
 
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        prog="python -m collector",
+        description="Collector market data Hyperliquid.",
+    )
+    p.add_argument(
+        "--config",
+        metavar="PERCORSO",
+        default=None,
+        help="file di configurazione (default: config.yaml accanto al package, "
+        "o $HL_CONFIG se definita)",
+    )
+    # Forma posizionale deprecata: l'unit systemd in produzione passa ancora il
+    # config cosi'. Toglierla romperebbe il collector al primo restart, che e'
+    # esattamente il momento in cui nessuno sta guardando.
+    p.add_argument("config_pos", nargs="?", default=None, help=argparse.SUPPRESS)
+    return p.parse_args(argv)
+
+
 def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    cfg = load_config(sys.argv[1] if len(sys.argv) > 1 else None)
+    args = parse_args()
+    cfg = load_config(args.config or args.config_pos)
     log.info("network=%s data_dir=%s", cfg["network"], cfg["data_dir"])
 
     c = Collector(cfg)

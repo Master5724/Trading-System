@@ -79,6 +79,12 @@ rosso — un test che non può fallire non è un test.
 > risposta su file.
 > Nessuna logica di strategia. Nessun ordine inviato senza flag esplicito.
 
+**Nota:** prima di fidarsi degli ack sui canali utente (`userFills`,
+`orderUpdates`), verificare come il server rimanda indietro l'indirizzo
+nell'eco della subscribe: una capitalizzazione diversa (checksum contro
+minuscolo) farebbe fallire il match per inclusione e produrrebbe un falso
+allarme proprio al momento della configurazione della API wallet.
+
 **Rivedi tu:** il percorso di firma e la gestione dei nonce. È l'altro punto
 dove un bug non ti dà un errore, ti dà una posizione che non volevi.
 

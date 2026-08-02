@@ -1,4 +1,4 @@
-"""Entrypoint: `python -m collector [percorso/config.yaml]`."""
+"""Entrypoint: `python -m collector [--config percorso/config.yaml]`."""
 
 from __future__ import annotations
 
