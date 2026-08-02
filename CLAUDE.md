@@ -64,7 +64,7 @@ runner/        paper e live
 
 ## Stile
 
-- Python 3.12, type hints ovunque, `from __future__ import annotations`.
+- Python 3.11+, type hints ovunque, `from __future__ import annotations`.
 - asyncio per I/O. Niente framework pesanti, niente ORM, niente Airflow.
 - Storage: Parquet + DuckDB. Non introdurre un database senza discuterlo.
 - Dipendenze nuove: solo se motivate esplicitamente nel riepilogo del task.
