@@ -22,15 +22,17 @@ import time
 import websockets
 import yaml
 
+from .acks import ack_matches, sub_key
 from .backfill import backfill
 from .gaps import GapRecorder
 from .parsing import coin_of, exch_ts_of, truncate_book
 from .writer import WriterPool
 
-# Ri-esportati: erano definiti qui prima di essere isolati in parsing.py, e
-# restano importabili da questo modulo per non rompere chi li importava.
-__all__ = ["Collector", "build_subscriptions", "coin_of", "exch_ts_of",
-           "truncate_book", "main"]
+# Ri-esportati: erano definiti qui prima di essere isolati in parsing.py e
+# acks.py, e restano importabili da questo modulo per non rompere chi li
+# importava.
+__all__ = ["Collector", "build_subscriptions", "ack_matches", "sub_key",
+           "coin_of", "exch_ts_of", "truncate_book", "main"]
 
 WS_URL = {
     "mainnet": "wss://api.hyperliquid.xyz/ws",
@@ -62,11 +64,6 @@ def build_subscriptions(cfg: dict) -> list[dict]:
             if on:
                 subs.append({"type": ch, "user": user})
     return subs
-
-
-def sub_key(sub: dict) -> str:
-    """Chiave stabile per confrontare una subscribe inviata con il suo ack."""
-    return "|".join(f"{k}={sub[k]}" for k in sorted(sub))
 
 
 class Collector:
@@ -184,6 +181,19 @@ class Collector:
         else:
             log.info("tutte le %d sottoscrizioni confermate", len(self.subs))
 
+    def _record_ack(self, echo: dict) -> None:
+        """L'eco del server non e' identica alla subscribe inviata (aggiunge i
+        parametri opzionali al loro default), quindi va ricondotta alla
+        subscribe di partenza invece che confrontata per uguaglianza."""
+        matched = [s for s in self.subs if ack_matches(s, echo)]
+        if not matched:
+            # Non e' un errore fatale, ma vuol dire che non sappiamo piu' leggere
+            # gli ack: senza questa riga il difetto tornerebbe invisibile.
+            log.warning("ack non riconducibile a nessuna subscribe inviata: %s", echo)
+            return
+        for s in matched:
+            self._acked.add(sub_key(s))
+
     async def _ping(self, ws) -> None:
         interval = self.cfg["watchdog"]["ping_seconds"]
         while True:
@@ -207,7 +217,7 @@ class Collector:
                 data = msg.get("data") or {}
                 sub = data.get("subscription") if isinstance(data, dict) else None
                 if isinstance(sub, dict) and data.get("method") != "unsubscribe":
-                    self._acked.add(sub_key(sub))
+                    self._record_ack(sub)
             elif channel == "error":
                 log.error("errore dall'exchange: %s", msg.get("data"))
             return
