@@ -6,3 +6,6 @@ __pycache__/
 # registro dei buchi vive accanto a loro perche' senza i dati non significa
 # niente.
 data/
+# Non piu' prodotta (mainnet scrive fuori dal repo, in /home/<utente>/hl-data),
+# ma un checkout vecchio o un run manuale col config precedente la ricreerebbe.
+data-mainnet/
