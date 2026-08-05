@@ -125,3 +125,50 @@ Rivedi personalmente, riga per riga: `costs/`, `risk/`, e il percorso di firma
 in `execution/`. Sono i tre punti in cui un errore non produce un'eccezione:
 produce un numero plausibile e sbagliato, o una posizione che non volevi.
 Tutto il resto puoi accettarlo leggendo il diff.
+
+Appendice — Idee parcheggiate (NON sono task)
+Nota per chiunque legga questo file, umano o agente: questa sezione non
+contiene lavoro da svolgere. Sono idee registrate per non perderle, con le
+ragioni per cui non si fanno adesso. Non implementare nulla di quanto segue
+senza una richiesta esplicita che citi questa sezione.
+Operazioni on-chain su Solana
+Idea. Affiancare al sistema su Hyperliquid delle operazioni direttamente
+sulla blockchain Solana, per diversificare e sfruttare l'attività di quel
+mercato.
+Perché è parcheggiata. Tre ragioni, in ordine di peso.
+La volatilità non è rendimento. Un mercato molto movimentato non produce
+ritorni maggiori: senza un edge è solo un costo, perché aumenta lo slippage e
+moltiplica le occasioni di sbagliare alla stessa velocità con cui moltiplica
+quelle di indovinare. La volatilità amplifica un edge già dimostrato, non lo
+crea.
+Un secondo venue non è diversificazione. Comprare SOL spot su un DEX
+Solana e comprare il perp SOL su Hyperliquid è la stessa scommessa sulla
+stessa beta, eseguita due volte. La diversificazione vera nasce da flussi di
+rendimento scorrelati. Quello che si aggiunge davvero è una seconda pipeline
+dati, un secondo modello di costo, un secondo client di esecuzione, un secondo
+insieme di modi di rompersi e una contabilità fiscale più complessa.
+Il trading attivo on-chain ha un pavimento di costo più alto. Fee
+dell'AMM, priority fee ed esposizione al MEV superano ampiamente il costo
+taker di un perp DEX. On-chain conviene per detenere e per generare
+rendimento, non per operare a orizzonti brevi.
+Cosa invece sarebbe genuinamente diverso. Non il trading direzionale degli
+stessi asset, ma le fonti di rendimento che su Hyperliquid non esistono:
+Commissioni da liquidity provider sugli AMM: reddito da fee invece che da
+direzione. Contropartita: impermanent loss.
+Cattura del funding (basis trade): spot long contro perp short quando il
+funding è positivo. Non si prevede la direzione, si incassa il costo pagato da
+chi la prevede. È la direzione più promettente delle due, anche perché
+utilizzerebbe SOL già detenuto.
+Rischi da modellare prima di considerarla: liquidazione della gamba short,
+esecuzione coordinata su due venue con latenze diverse, inversione di segno del
+funding mentre la posizione è aperta, e il fatto che la gamba spot è
+illiquidabile in modo indipendente.
+Condizioni per riaprire il discorso. Tutte, non alcune:
+il backtester supera i test avversariali (strategia nulla, casuale, shuffle)
+almeno una strategia ha superato paper trading con divergenza spiegata rispetto
+al backtest
+esiste uno storico di funding sufficiente a stimare il rendimento del basis
+trade sui dati raccolti, non su assunzioni
+il sistema su un solo venue è stabile e non richiede più interventi frequenti
+Finché queste condizioni non sono soddisfatte, allargare il perimetro sposta
+lavoro dal problema irrisolto a uno nuovo, con l'impressione di avanzare.
