@@ -60,6 +60,14 @@ watchdog:
   ping_seconds: 30
   # Quanto aspettare gli ack delle subscribe prima di dire quali mancano.
   subscription_ack_seconds: 15
+  # Ogni quanto si sveglia il watchdog. E' anche il passo con cui misura il
+  # tempo trascorso davvero (vedi sotto).
+  tick_seconds: 10
+  # Se fra due risvegli del watchdog e' passato piu' di questo tempo OLTRE
+  # l'intervallo previsto, il processo era congelato (swap, OOM, sospensione):
+  # in quel periodo non ha raccolto niente anche se la socket era aperta.
+  # Viene registrato in _gaps.jsonl con cause=process_freeze.
+  freeze_jump_seconds: 60
 
 backfill:
   # Dopo ogni riconnessione, ricuci i buchi via REST.

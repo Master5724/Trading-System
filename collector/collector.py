@@ -24,7 +24,7 @@ import yaml
 
 from .acks import ack_matches, sub_key
 from .backfill import backfill
-from .gaps import GapRecorder
+from .gaps import DEFAULT_FREEZE_JUMP_SECONDS, FreezeDetector, GapRecorder
 from .instancelock import DataDirLock, DataDirLockedError
 from .netguard import NetworkMismatchError, claim_data_dir
 from .parsing import coin_of, exch_ts_of, truncate_book
@@ -136,10 +136,16 @@ class Collector:
                         await ws.send(json.dumps({"method": "subscribe", "subscription": s}))
                     log.info("%d sottoscrizioni inviate", len(self.subs))
 
-                    closed = self.gaps.mark_connected()
-                    if closed is not None:
-                        log.warning("buco chiuso: %.1fs senza dati (%s)",
-                                    closed.duration_s or 0.0, closed.reason)
+                    # La socket e' su, ma il buco non e' finito: finisce quando
+                    # i dati riprendono, canale per canale (vedi gaps.py). Qui
+                    # si registra solo l'istante della riconnessione.
+                    still_open = self.gaps.mark_reconnected()
+                    if still_open is not None:
+                        log.warning(
+                            "riconnesso dopo %.1fs; buco ancora aperto sui canali %s",
+                            (still_open.reconnect_ms - still_open.start_ms) / 1000.0,
+                            still_open.pending_channels or "(elenco assente)",
+                        )
                     if not first:
                         # Ricuci il buco: le candele e il funding sono
                         # ricostruibili via REST, i trade tick-by-tick no.
@@ -237,6 +243,12 @@ class Collector:
         data = msg.get("data")
         self.last_by_channel[channel] = now
         self.msg_count += 1
+        # Un dato arrivato davvero: e' l'unica cosa che puo' chiudere un buco
+        # su questo canale. La socket riaperta non basta.
+        closed = self.gaps.mark_data(channel)
+        if closed is not None:
+            log.warning("buco chiuso: %.1fs senza dati (%s)",
+                        closed.duration_s or 0.0, closed.reason)
 
         if channel == "l2Book" and isinstance(data, dict):
             data = truncate_book(data, self.cfg["l2_depth"])
@@ -245,8 +257,23 @@ class Collector:
 
     async def _watchdog(self) -> None:
         w = self.cfg["watchdog"]
+        tick = w.get("tick_seconds", 10)
+        freeze = FreezeDetector(
+            self.gaps,
+            tick_s=tick,
+            threshold_s=w.get("freeze_jump_seconds", DEFAULT_FREEZE_JUMP_SECONDS),
+        )
         while True:
-            await asyncio.sleep(10)
+            await asyncio.sleep(tick)
+            # Prima di ogni altro controllo: se questo risveglio e' arrivato con
+            # molto ritardo, il processo era fermo e nel frattempo non ha scritto
+            # niente — anche se la socket e' rimasta aperta e nessuno se n'e'
+            # accorto. Il buco va registrato prima di guardare il silenzio, che
+            # ne e' solo la conseguenza.
+            frozen = freeze.tick(self._subscribed_channels())
+            if frozen is not None:
+                log.error("congelamento del processo: %.0fs senza girare (%s)",
+                          frozen.duration_s or 0.0, frozen.reason)
             now = time.monotonic()
             if self.last_msg_at and now - self.last_msg_at > w["global_silence_seconds"]:
                 # Silenzio totale = connessione zombie. Capita, e senza questo
