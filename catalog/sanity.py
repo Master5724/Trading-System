@@ -11,7 +11,7 @@ altro codice senza doverli riestrarre da una stringa formattata.
 
 from __future__ import annotations
 
-from .dataset import glob_all, glob_channel, read
+from .dataset import accumulate, drop, glob_all, glob_channel, glob_partition, read
 
 # Percentili usati ovunque nel modulo. Estremi inclusi: e' la coda che dice se
 # un dato e' inutilizzabile, la mediana da sola non lo direbbe mai.

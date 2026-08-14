@@ -22,7 +22,7 @@ Tre scelte di metodo, tutte deliberate:
 
 from __future__ import annotations
 
-from .dataset import BACKFILL_CHANNELS, glob_all, read
+from .dataset import BACKFILL_CHANNELS, accumulate, drop, glob_partition, read
 
 # Soglia del flag statistico: sotto il 90% della mediana oraria della stessa
 # coppia canale/coin. Valore fissato dalla specifica del task, non tarato sui
@@ -34,12 +34,20 @@ NS_PER_HOUR = 3_600_000_000_000
 MS_PER_HOUR = 3_600_000
 
 
-def build_hourly(con, data_dir: str) -> None:
-    """Popola la tabella `hourly` con una riga per (canale, coin, ora UTC)."""
-    src = read(glob_all(data_dir))
-    con.execute(
-        f"""
-        CREATE OR REPLACE TABLE hourly_raw AS
+def build_hourly(con, data_dir: str, partitions: list[tuple[str, str]]) -> None:
+    """Popola la tabella `hourly` con una riga per (canale, coin, ora UTC).
+
+    Una query per partizione, non una su tutti i file: il GROUP BY e' gia' per
+    (canale, coin, ora), quindi partizionare lo scan da' lo stesso risultato
+    tenendo in memoria un solo canale/coin per volta.
+    """
+    drop(con, "hourly_raw")
+    for channel, coin in partitions:
+        src = read(glob_partition(data_dir, channel, coin))
+        accumulate(
+            con,
+            "hourly_raw",
+            f"""
         SELECT
             channel,
             CASE WHEN coin = '' THEN '_global' ELSE coin END AS coin,
@@ -55,8 +63,8 @@ def build_hourly(con, data_dir: str) -> None:
                 FILTER (WHERE ts_exch_ms <> 0)                    AS latency_ms_p50
         FROM {src}
         GROUP BY 1, 2, 3
-        """
-    )
+        """,
+        )
 
     # Griglia densa: ogni ora fra la prima e l'ultima osservata, per partizione.
     con.execute(

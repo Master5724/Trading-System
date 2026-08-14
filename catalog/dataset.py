@@ -99,6 +99,31 @@ def connect(temp_dir: str, memory_limit: str | None = None) -> duckdb.DuckDBPyCo
     return con
 
 
+def accumulate(con, table: str, select_sql: str) -> None:
+    """Appende il risultato di `select_sql` a `table`, creandola alla prima
+    chiamata.
+
+    E' il mattone del passaggio da "una query su tutti i file" a "una query per
+    partizione". Serve perche' ogni metrica del catalogo e' gia' calcolata per
+    (canale, coin): lo scan globale non aggiungeva niente al risultato, ma
+    teneva in memoria contemporaneamente i metadati di tutti i parquet e tutti
+    gli hash set dei COUNT(DISTINCT). Su 300k file quel picco arriva a diversi
+    GB, e su questa macchina la RAM la sta usando il collector.
+    """
+    exists = con.execute(
+        "SELECT count(*) FROM duckdb_tables() WHERE table_name = ?", [table]
+    ).fetchone()[0]
+    if exists:
+        con.execute(f"INSERT INTO {table} {select_sql}")
+    else:
+        con.execute(f"CREATE TABLE {table} AS {select_sql}")
+
+
+def drop(con, *tables: str) -> None:
+    for t in tables:
+        con.execute(f"DROP TABLE IF EXISTS {t}")
+
+
 def read(glob: str, **opts) -> str:
     """Espressione `read_parquet` con le opzioni fissate una volta sola.
 

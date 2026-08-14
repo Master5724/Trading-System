@@ -87,7 +87,7 @@ def run(args: argparse.Namespace) -> dict:
     # --- copertura e marcatura oraria ---------------------------------------
     windows = gapwindows.load(gaps_path, now_ms)
     gapwindows.materialize(con, windows)
-    step("copertura oraria", lambda: metrics.build_hourly(con, data_dir))
+    step("copertura oraria", lambda: metrics.build_hourly(con, data_dir, partitions))
     metrics.apply_gap_overlap(con)
     metrics.apply_low_volume(con)
 
