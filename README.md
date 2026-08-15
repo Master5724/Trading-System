@@ -171,10 +171,82 @@ ricostruita a posteriori si aggiunge come riga singola e autoconclusiva:
 
 `load_windows` la legge come finestra chiusa. Ce n'e' una in mainnet, per il
 congelamento da OOM del 2026-08-14 15:55:29→17:18:08 UTC, avvenuto prima che il
-rilevatore esistesse.
+rilevatore esistesse. Dura 4959 s ed e' l'interruzione piu' lunga dell'intera
+raccolta: piu' del quadruplo della somma di tutte le altre.
+
+### Regola di lettura di `_gaps.jsonl` (vale per chiunque, non solo per il catalogo)
+
+> **Si considerano tutti i record che dichiarano una durata, qualunque sia il
+> valore di `event`.** Un record dichiara una durata se ha `start_ms` e ha
+> `end_ms` oppure `duration_s`.
+
+Non e' una raffinatezza. Il file contiene almeno cinque tipi di evento e ne
+guadagnera' altri: e' append-only e additivo per costruzione. Un'analisi che
+filtra su `event == "close"` — la forma piu' naturale da scrivere, e quella
+scritta davvero — salta la riga `manual` e **sottostima il tempo scollegato di
+oltre un'ora**, senza nessun errore e senza nessun segnale: il risultato e'
+solo... piu' bello.
+
+Il modo giusto e' non scrivere un parser proprio:
+
+```python
+from collector.gaps import load_windows      # semantica di open/close/resume/manual
+from catalog.gapwindows import load_with_audit
+
+windows, audit = load_with_audit("data/_gaps.jsonl", now_ms)
+audit["record_con_durata"]   # quanti record dichiaravano una durata
+audit["recuperati"]          # quanti non erano coperti da nessuna finestra
+```
+
+`load_with_audit` rilegge il file una seconda volta di sola verifica e pretende
+che ogni record con una durata sia contenuto in una finestra; quelli che non lo
+sono diventano finestre a se' stanti (`origin = "recuperato"`) invece di sparire.
+I due numeri dell'audit finiscono nel report del catalogo apposta: sono la prova
+che il contratto e' stato rispettato in quel run, verificabile senza riaprire il
+JSONL. Se un giorno `recuperati` e' maggiore di zero, il registro contiene un
+evento che il parser condiviso non conosce — va guardato, non ignorato.
 
 Il log del collector resta comunque utile per il contesto: tienilo, non
 ruotarlo via.
+
+## Catalogo (`python -m catalog`)
+
+Report di integrita' sui parquet, in sola lettura sulla directory dati:
+
+```bash
+python -m catalog --data-dir /home/ubuntu/hl-data/mainnet --out-dir ~/hl-reports
+```
+
+Produce `report.txt`, `summary.json` e `hourly_metrics.parquet` (una riga per
+canale/coin/ora). Due scelte che conviene conoscere prima di leggerlo:
+
+**`low_volume` si alza solo sui canali a cadenza fissa.** `l2Book`,
+`activeAssetCtx` e `allMids` arrivano a intervalli regolari qualunque cosa
+faccia il mercato: un'ora sotto il 90% della mediana e' un'anomalia di
+raccolta. Su `trades` e `candle` il volume orario *e'* il mercato — fra un
+rilascio macro e le quattro del mattino di domenica cambia di multipli — e la
+stessa soglia produce centinaia di ore marcate che non dicono niente. Per quei
+canali il report pubblica comunque la statistica (`median_rows`, `rows_ratio`,
+`below_median`) ma non marca l'ora. L'elenco si cambia con
+`--fixed-rate-channels l2Book,allMids` (stringa vuota = nessun canale).
+
+**I trade si leggono deduplicati per `tid`.** Dopo una riconnessione il server
+rimanda gli ultimi scambi: sui dati mainnet e' circa lo 0,2% dei trade. I file
+su disco non si toccano — sono la registrazione onesta di cio' che e' arrivato —
+e la dedup avviene in lettura:
+
+```python
+from catalog.trades import dedup_sql
+con.execute(f"SELECT count(*) FROM {dedup_sql(data_dir, 'BTC')}")
+```
+
+Si tiene la **prima** consegna (`ts_local_ns` minimo): e' quella che un sistema
+live avrebbe visto, e tenere la ritrasmissione daterebbe il trade fino a decine
+di secondi dopo il fatto. E' da qui che il backtester leggera' i trade, per lo
+stesso motivo per cui il modello di costo stara' in un modulo solo. Il report
+riporta per coin le consegne in eccesso e `tid_incoerenti` (stesso `tid`,
+contenuto diverso): quel numero deve restare 0, altrimenti la dedup sta
+scegliendo fra due verita'.
 
 ## Storage
 

@@ -21,6 +21,19 @@ import duckdb
 # mediana oraria non significa niente, quindi il report li tiene separati.
 BACKFILL_CHANNELS = frozenset({"backfill_candle", "backfill_funding"})
 
+# Canali a cadenza fissa: l'exchange li pubblica a intervalli regolari
+# indipendentemente da cosa fa il mercato, quindi il conteggio orario delle
+# righe e' pressoche' costante e uno scostamento del 10% dalla mediana e'
+# davvero un'anomalia di raccolta. Sugli altri canali (`trades`, `candle`) il
+# volume e' guidato dall'attivita': fra l'ora di un rilascio macro e le 4 del
+# mattino di domenica il numero di trade cambia di multipli, e la stessa soglia
+# produce centinaia di ore marcate che non hanno niente di anomalo.
+#
+# L'elenco e' un default, non una verita': `--fixed-rate-channels` lo
+# sovrascrive, perche' quali canali siano a cadenza fissa dipende da cosa il
+# collector ha sottoscritto, non da questo file.
+DEFAULT_FIXED_RATE_CHANNELS = frozenset({"activeAssetCtx", "allMids", "l2Book"})
+
 GAPS_FILENAME = "_gaps.jsonl"
 
 
@@ -88,14 +101,34 @@ def sql_str(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def connect(temp_dir: str, memory_limit: str | None = None) -> duckdb.DuckDBPyConnection:
+def connect(
+    temp_dir: str,
+    memory_limit: str | None = None,
+    threads: int | None = None,
+) -> duckdb.DuckDBPyConnection:
     """Connessione in-memory. `temp_dir` sta fuori da data_dir per costruzione:
-    se DuckDB deve fare spill su disco non deve toccare i dati di produzione."""
+    se DuckDB deve fare spill su disco non deve toccare i dati di produzione.
+
+    `threads` non e' una manopola di prestazioni, e' una manopola di memoria:
+    ogni thread tiene i propri buffer di scan e le proprie tabelle hash, quindi
+    il picco cresce col parallelismo mentre `memory_limit` copre solo la parte
+    che DuckDB sa contabilizzare. Su questa macchina (2 core, e il collector
+    che gira sopra) il default e' 1: il catalogo puo' permettersi di essere
+    lento, non di far uccidere il collector dall'OOM killer.
+    """
     os.makedirs(temp_dir, exist_ok=True)
     con = duckdb.connect()
     con.execute(f"SET temp_directory = {sql_str(temp_dir)}")
+    # DuckDB tiene in RAM i file esterni gia' letti. Su ~317k parquet per 2.4 GB
+    # quella cache cresce fino a superare il tetto del cgroup e il processo
+    # viene ucciso a meta' scansione: misurato, non temuto — con la cache
+    # attiva il catalogo muore per OOM a 2 GB, senza sta in 300 MB. La cache
+    # del kernel copre gia' le riletture, e a costo zero per il collector.
+    con.execute("SET enable_external_file_cache = false")
     if memory_limit:
         con.execute(f"SET memory_limit = {sql_str(memory_limit)}")
+    if threads:
+        con.execute(f"SET threads = {int(threads)}")
     return con
 
 

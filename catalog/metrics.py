@@ -18,11 +18,27 @@ Tre scelte di metodo, tutte deliberate:
    dai dati. Fonderli in un unico "ora buona/cattiva" butterebbe via la
    distinzione fra "so che mancava" e "sospetto che manchi". Il catalogo marca,
    non esclude.
+
+4. **`low_volume` vale solo dove la cadenza e' fissa.** La statistica oraria
+   (`n_rows`, `median_rows`, `rows_ratio`, `below_median`) viene calcolata e
+   pubblicata per tutti i canali; il flag di sospetto viene alzato solo sui
+   canali a cadenza fissa. Su `trades` e `candle` il volume orario varia con
+   l'attivita' del mercato di molto piu' del 10%, e marcare quelle ore
+   significa produrre centinaia di allarmi che dicono "di domenica notte si
+   scambia meno" — rumore che nasconde le poche ore davvero rotte. Vedi
+   `dataset.DEFAULT_FIXED_RATE_CHANNELS`.
 """
 
 from __future__ import annotations
 
-from .dataset import BACKFILL_CHANNELS, accumulate, drop, glob_partition, read
+from .dataset import (
+    BACKFILL_CHANNELS,
+    DEFAULT_FIXED_RATE_CHANNELS,
+    accumulate,
+    drop,
+    glob_partition,
+    read,
+)
 
 # Soglia del flag statistico: sotto il 90% della mediana oraria della stessa
 # coppia canale/coin. Valore fissato dalla specifica del task, non tarato sui
@@ -135,7 +151,16 @@ def apply_gap_overlap(con) -> None:
     )
 
 
-def apply_low_volume(con) -> None:
+def _in_list(column: str, values: frozenset[str] | set[str]) -> str:
+    """Predicato SQL di appartenenza. Con un insieme vuoto ritorna `false`:
+    `IN ()` non e' SQL valido, e la risposta giusta a "nessun canale e' a
+    cadenza fissa" e' "nessuna ora viene marcata", non un errore."""
+    if not values:
+        return "false"
+    return f"{column} IN ({', '.join(repr(v) for v in sorted(values))})"
+
+
+def apply_low_volume(con, fixed_rate_channels: frozenset[str] | None = None) -> None:
     """Confronta il conteggio orario con la mediana della stessa partizione.
 
     La mediana si calcola sulle ore "pulite": non la prima e non l'ultima ora
@@ -144,7 +169,17 @@ def apply_low_volume(con) -> None:
     Includerle abbasserebbe la mediana e renderebbe il flag cieco proprio dove
     serve. Se non resta nessuna ora pulita si ripiega su tutte le ore e lo si
     dichiara nella colonna `median_basis`.
+
+    Il confronto con la mediana viene calcolato per tutti i canali
+    (`below_median`), ma diventa il flag `low_volume` solo per i canali a
+    cadenza fissa. Le due colonne separate servono a non confondere "non e'
+    sotto la soglia" con "non e' stato valutato": `is_fixed_rate` dice quale
+    dei due casi e'.
     """
+    fixed = (
+        DEFAULT_FIXED_RATE_CHANNELS if fixed_rate_channels is None
+        else frozenset(fixed_rate_channels)
+    )
     con.execute(
         """
         CREATE OR REPLACE TABLE hourly_median AS
@@ -185,7 +220,12 @@ def apply_low_volume(con) -> None:
             coalesce(g.gap_seconds, 0.0) > 0  AS gap_overlap,
             m.median_rows, m.median_basis, m.median_basis_hours,
             CASE WHEN m.median_rows > 0 THEN b.n_rows / m.median_rows END AS rows_ratio,
+            {_in_list("b.channel", fixed)}    AS is_fixed_rate,
             m.median_rows > 0 AND b.n_rows < {LOW_VOLUME_FRACTION} * m.median_rows
+                                              AS below_median,
+            {_in_list("b.channel", fixed)}
+              AND m.median_rows > 0
+              AND b.n_rows < {LOW_VOLUME_FRACTION} * m.median_rows
                                               AS low_volume
         FROM hourly_base b
         LEFT JOIN hourly_gaps g   USING (channel, coin, hour_idx)
@@ -218,7 +258,7 @@ def coverage(con) -> list[dict]:
         "channel", "coin", "n_rows", "n_hours", "n_hours_with_data",
         "first_ts_ns", "last_ts_ns", "span_hours", "rows_per_hour_median",
         "rows_per_hour_mean", "n_hours_zero", "n_gap_hours", "n_low_volume_hours",
-        "is_stream",
+        "n_hours_below_median", "is_stream", "is_fixed_rate",
     ]
     rows = con.execute(
         """
@@ -234,7 +274,9 @@ def coverage(con) -> list[dict]:
                count(*) FILTER (WHERE n_rows = 0)           AS n_hours_zero,
                count(*) FILTER (WHERE gap_overlap)          AS n_gap_hours,
                count(*) FILTER (WHERE low_volume)           AS n_low_volume_hours,
-               any_value(is_stream)                         AS is_stream
+               count(*) FILTER (WHERE below_median)         AS n_hours_below_median,
+               any_value(is_stream)                         AS is_stream,
+               any_value(is_fixed_rate)                     AS is_fixed_rate
         FROM hourly GROUP BY 1, 2 ORDER BY 1, 2
         """
     ).fetchall()
@@ -245,11 +287,13 @@ def flagged_hours(con, limit: int) -> list[dict]:
     cols = [
         "channel", "coin", "hour_utc", "n_rows", "median_rows", "rows_ratio",
         "gap_seconds", "gap_overlap", "low_volume", "is_edge_hour", "gap_still_open",
+        "is_fixed_rate", "below_median",
     ]
     rows = con.execute(
         f"""
         SELECT channel, coin, hour_utc, n_rows, median_rows, rows_ratio,
-               gap_seconds, gap_overlap, low_volume, is_edge_hour, gap_still_open
+               gap_seconds, gap_overlap, low_volume, is_edge_hour, gap_still_open,
+               is_fixed_rate, below_median
         FROM hourly
         WHERE is_stream AND (gap_overlap OR low_volume)
         ORDER BY hour_utc, channel, coin
@@ -260,6 +304,14 @@ def flagged_hours(con, limit: int) -> list[dict]:
 
 
 def flagged_counts(con) -> dict:
+    """Conteggi delle ore marcate.
+
+    `sotto_mediana_non_valutate` e' il numero di ore che sarebbero state
+    marcate `low_volume` dalla versione precedente e che oggi non lo sono
+    perche' il canale non ha cadenza fissa. Va pubblicato: una soglia che
+    smette di essere applicata deve lasciare traccia del suo effetto, se no
+    la differenza fra due report diventa inspiegabile.
+    """
     row = con.execute(
         """
         SELECT count(*) FILTER (WHERE is_stream AND gap_overlap),
@@ -269,14 +321,18 @@ def flagged_counts(con) -> dict:
                count(*) FILTER (WHERE is_stream AND low_volume AND NOT gap_overlap
                                   AND NOT is_edge_hour),
                count(*) FILTER (WHERE is_stream AND n_rows = 0),
-               count(*) FILTER (WHERE is_stream)
+               count(*) FILTER (WHERE is_stream),
+               count(*) FILTER (WHERE is_stream AND below_median
+                                  AND NOT is_fixed_rate),
+               count(*) FILTER (WHERE is_stream AND is_fixed_rate)
         FROM hourly
         """
     ).fetchone()
     return dict(
         zip(
             ["gap_overlap", "low_volume", "entrambi", "solo_low_volume",
-             "solo_low_volume_non_edge", "ore_vuote", "ore_totali_stream"],
+             "solo_low_volume_non_edge", "ore_vuote", "ore_totali_stream",
+             "sotto_mediana_non_valutate", "ore_cadenza_fissa"],
             row,
         )
     )
