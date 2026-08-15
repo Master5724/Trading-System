@@ -119,12 +119,46 @@ def build(res: dict) -> list[str]:
         f"tempo scollegato totale: {_f(g['total_s'], 1)} s "
         f"({_f(g['total_s'] / 3600.0, 3)} ore) su {_f(m['span_days'] * 24, 1)} ore di dati",
         f"finestra piu' lunga    : {_f(g['max_s'], 1)} s",
+    ]
+    audit = g.get("audit") or {}
+    if audit:
+        eventi = ", ".join(
+            f"{k}={v}" for k, v in (audit.get("eventi_con_durata") or {}).items()
+        )
+        L += [
+            "",
+            "Lettura del registro (contratto: TUTTI i record che dichiarano una",
+            "durata, qualunque sia `event` — un filtro su event=='close' salta la",
+            "riga `manual` del blackout piu' lungo mai registrato):",
+            f"  record con durata trovati : {_f(audit.get('record_con_durata'))}"
+            + (f"   [{eventi}]" if eventi else ""),
+            f"  gia' coperti da finestre  : "
+            f"{_f((audit.get('record_con_durata') or 0) - (audit.get('recuperati') or 0))}",
+            f"  recuperati a parte        : {_f(audit.get('recuperati'))}"
+            + ("" if not audit.get("eventi_recuperati") else
+               "   [" + ", ".join(f"{k}={v}" for k, v in
+                                  audit["eventi_recuperati"].items()) + "]"),
+        ]
+    if g.get("longest"):
+        L += ["", "Interruzioni piu' lunghe:"]
+        L += table(
+            g["longest"],
+            [("start_utc", "inizio UTC", 0), ("duration_s", "durata_s", 1),
+             ("event", "evento", 0), ("origin", "origine", 0),
+             ("reason", "motivo", 0)],
+        )
+    L += [
         "",
         "Le due marcature sono separate e non vanno fuse:",
         "  gap_overlap = l'ora interseca una disconnessione REGISTRATA dal collector",
         "  low_volume  = le righe dell'ora sono sotto il 90% della mediana oraria",
         "                di quella coppia canale/coin (mediana calcolata sulle ore",
-        "                non-bordo e senza gap)",
+        "                non-bordo e senza gap). Alzato SOLO sui canali a cadenza",
+        "                fissa: " + (", ".join(res.get("fixed_rate_channels") or [])
+                                     or "(nessuno)"),
+        "  below_median= stessa statistica, calcolata su tutti i canali ma senza",
+        "                marcare: su trades e candle il volume orario segue",
+        "                l'attivita' del mercato, non la salute della raccolta",
         "Il catalogo marca. Non esclude e non cancella niente.",
         "",
     ]
@@ -143,6 +177,10 @@ def build(res: dict) -> list[str]:
         f"  solo low_volume (nessun gap): {_f(fc['solo_low_volume'])}",
         f"    di cui non ore di bordo   : {_f(fc['solo_low_volume_non_edge'])}",
         f"  senza nemmeno una riga      : {_f(fc['ore_vuote'])}",
+        f"Ore su canali a cadenza fissa : {_f(fc.get('ore_cadenza_fissa'))}"
+        "   (le sole valutabili con low_volume)",
+        f"  sotto mediana ma NON marcate: {_f(fc.get('sotto_mediana_non_valutate'))}"
+        "   (canali guidati dall'attivita')",
         "",
         "Ore marcate (le prime per timestamp):",
     ]
@@ -152,7 +190,7 @@ def build(res: dict) -> list[str]:
          ("n_rows", "righe", 0), ("median_rows", "mediana", 1),
          ("rows_ratio", "rapporto", 3), ("gap_seconds", "gap_s", 1),
          ("gap_overlap", "gap", 0), ("low_volume", "low_vol", 0),
-         ("is_edge_hour", "bordo", 0)],
+         ("is_edge_hour", "bordo", 0), ("is_fixed_rate", "cad_fissa", 0)],
     )
     if res["flagged_truncated"] > 0:
         L += [f"  ... e altre {_f(res['flagged_truncated'])} ore marcate "
@@ -182,10 +220,27 @@ def build(res: dict) -> list[str]:
     ]
     td = res["trade_dup"]
     if td:
+        tot = sum(r["n_trades"] for r in td) or 1
+        dup = sum(r["n_dup_tid"] for r in td)
+        conflitti = sum(r["n_tid_contraddittori"] for r in td)
         L += ["", "  Duplicati di trade per `tid` (identificatore di esecuzione):"]
-        L += table(td, [("coin", "coin", 0), ("n_trades", "trade", 0),
+        L += table(td, [("coin", "coin", 0), ("n_trades", "consegnati", 0),
                         ("n_distinct_tid", "tid_distinti", 0),
-                        ("n_dup_tid", "tid_duplicati", 0)])
+                        ("n_dup_tid", "consegne_extra", 0),
+                        ("n_tid_ripetuti", "tid_ripetuti", 0),
+                        ("n_tid_contraddittori", "tid_incoerenti", 0)])
+        L += [
+            "",
+            f"  Totale: {_f(dup)} consegne in eccesso su {_f(tot)} "
+            f"({_f(100.0 * dup / tot, 3)}%), {_f(conflitti)} tid con contenuto",
+            "  diverso fra due consegne.",
+            "  Sono ritrasmissioni del server dopo una riconnessione, non un guasto.",
+            "  I file NON vengono modificati: la dedup avviene in lettura, in",
+            "  `catalog.trades.dedup_sql` (si tiene la prima consegna osservata),",
+            "  ed e' da li' che il backtester leggera' i trade.",
+            "  `tid_incoerenti` deve essere 0: se non lo e', la dedup sta",
+            "  scegliendo fra due verita'.",
+        ]
 
     L += ["", "3.2 Monotonia di ts_local_ns (ordine di scrittura)", ""]
     L += table(

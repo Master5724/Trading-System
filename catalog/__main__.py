@@ -16,7 +16,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from . import dataset, funding, gapwindows, metrics, report, sanity, spread
+from . import dataset, funding, gapwindows, metrics, report, sanity, spread, trades
 
 
 def _log(msg: str) -> None:
@@ -51,9 +51,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="orizzonte del funding cumulato di un long (default 10)")
     p.add_argument("--max-rows", type=int, default=40,
                    help="quante ore marcate stampare per esteso (default 40)")
-    p.add_argument("--memory-limit", default="4GB",
-                   help="tetto di memoria per DuckDB (default 4GB): il collector "
+    p.add_argument("--memory-limit", default="1GB",
+                   help="tetto di memoria per DuckDB (default 1GB): il collector "
                         "gira sulla stessa macchina e non va affamato")
+    p.add_argument("--threads", type=int, default=1,
+                   help="thread DuckDB (default 1). Piu' thread = piu' picco di "
+                        "memoria: il catalogo puo' essere lento, non puo' far "
+                        "uccidere il collector dall'OOM killer")
+    p.add_argument("--fixed-rate-channels",
+                   default=",".join(sorted(dataset.DEFAULT_FIXED_RATE_CHANNELS)),
+                   help="canali a cadenza fissa, separati da virgola: solo su "
+                        "questi il conteggio orario sotto la mediana viene "
+                        "marcato low_volume. Stringa vuota = nessun canale.")
     p.add_argument("--now-ms", type=int, default=None,
                    help="istante di riferimento per chiudere le finestre di gap "
                         "ancora aperte (default: adesso). Serve ai test.")
@@ -73,9 +82,14 @@ def run(args: argparse.Namespace) -> dict:
     partitions = dataset.discover(data_dir)
     channels = sorted({c for c, _ in partitions})
     l2_coins = sorted({coin for ch, coin in partitions if ch == "l2Book"})
+    trade_coins = sorted({coin for ch, coin in partitions if ch == trades.CHANNEL})
+    fixed_rate = frozenset(
+        c.strip() for c in args.fixed_rate_channels.split(",") if c.strip()
+    )
     _log(f"{len(partitions)} partizioni, canali: {', '.join(channels)}")
 
-    con = dataset.connect(os.path.join(out_dir, ".duckdb-tmp"), args.memory_limit)
+    con = dataset.connect(os.path.join(out_dir, ".duckdb-tmp"), args.memory_limit,
+                          args.threads)
     res: dict = {"funding_days": args.funding_days}
 
     def step(label, fn):
@@ -85,11 +99,11 @@ def run(args: argparse.Namespace) -> dict:
         return out
 
     # --- copertura e marcatura oraria ---------------------------------------
-    windows = gapwindows.load(gaps_path, now_ms)
+    windows, gaps_audit = gapwindows.load_with_audit(gaps_path, now_ms)
     gapwindows.materialize(con, windows)
     step("copertura oraria", lambda: metrics.build_hourly(con, data_dir, partitions))
     metrics.apply_gap_overlap(con)
-    metrics.apply_low_volume(con)
+    metrics.apply_low_volume(con, fixed_rate)
 
     # --- book: serve sia allo spread sia alla coerenza dei prezzi ------------
     step("estrazione top of book", lambda: spread.build_book_top(con, data_dir))
@@ -107,6 +121,7 @@ def run(args: argparse.Namespace) -> dict:
     ).fetchone()[0]
     res["flagged_truncated"] = max(0, n_flagged_total - len(res["flagged"]))
 
+    res["fixed_rate_channels"] = sorted(fixed_rate)
     res["gaps"] = {
         "path": gaps_path,
         "exists": os.path.exists(gaps_path),
@@ -114,6 +129,18 @@ def run(args: argparse.Namespace) -> dict:
         "n_open": sum(1 for w in windows if w.still_open),
         "total_s": sum(w.duration_s for w in windows),
         "max_s": max((w.duration_s for w in windows), default=0.0),
+        "audit": gaps_audit,
+        "longest": [
+            {
+                "start_ms": w.start_ms,
+                "start_utc": _iso(w.start_ms * 1_000_000),
+                "duration_s": w.duration_s,
+                "event": w.event,
+                "origin": w.origin,
+                "reason": w.reason[:80],
+            }
+            for w in sorted(windows, key=lambda w: -w.duration_s)[:5]
+        ],
         "by_reason": [
             dict(zip(["reason", "n", "total_s", "max_s"], r))
             for r in con.execute(
@@ -125,18 +152,19 @@ def run(args: argparse.Namespace) -> dict:
     }
 
     # --- sanita' -------------------------------------------------------------
-    res["duplicates"] = step("duplicati", lambda: sanity.duplicates(con, data_dir))
-    step("ordinamento righe", lambda: sanity.build_ordered(con, data_dir))
+    res["duplicates"] = step("duplicati", lambda: sanity.duplicates(con, data_dir, partitions))
+    step("ordinamento righe", lambda: sanity.build_ordered(con, data_dir, partitions))
     res["monotonicity"] = sanity.monotonicity(con)
     res["monotonicity_breaks"] = sanity.monotonicity_breaks(con, args.max_rows)
     res["interarrival"] = sanity.interarrival(con)
     res["exch_ts_zero"] = sanity.exch_ts_zero(con)
-    res["latency"] = step("latenza", lambda: sanity.latency(con, data_dir))
+    res["latency"] = step("latenza", lambda: sanity.latency(con, data_dir, partitions))
     res["partition_drift"] = step(
-        "partizionamento", lambda: sanity.partition_drift(con, data_dir))
+        "partizionamento", lambda: sanity.partition_drift(con, data_dir, partitions))
     res["trade_dup"] = (
-        step("duplicati trade", lambda: sanity.trade_id_duplicates(con, data_dir))
-        if "trades" in channels else []
+        step("duplicati trade",
+             lambda: trades.duplicate_stats(con, data_dir, trade_coins))
+        if trade_coins else []
     )
 
     if "allMids" in channels and l2_coins:

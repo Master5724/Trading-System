@@ -11,7 +11,7 @@ altro codice senza doverli riestrarre da una stringa formattata.
 
 from __future__ import annotations
 
-from .dataset import accumulate, drop, glob_all, glob_channel, glob_partition, read
+from .dataset import accumulate, drop, glob_channel, glob_partition, read
 
 # Percentili usati ovunque nel modulo. Estremi inclusi: e' la coda che dice se
 # un dato e' inutilizzabile, la mediana da sola non lo direbbe mai.
@@ -34,7 +34,28 @@ def _rows(con, sql: str, cols: list[str]) -> list[dict]:
     return [dict(zip(cols, r)) for r in con.execute(sql).fetchall()]
 
 
-def duplicates(con, data_dir: str) -> list[dict]:
+def per_partizione(con, data_dir: str, partitions, tmp: str, cols: list[str],
+                   sql_for) -> list[dict]:
+    """Esegue `sql_for(src)` una partizione per volta e concatena i risultati.
+
+    Tutte le metriche di questo modulo sono gia' raggruppate per (canale,
+    coin), quindi lo scan globale non aggiungeva niente al risultato: teneva
+    solo in memoria, contemporaneamente, gli hash set di tutti i COUNT(DISTINCT)
+    di tutte le partizioni. Su questi dati (317k file, 2.4 GB) quel picco
+    arrivava a superare il tetto di 2 GB del cgroup e il processo veniva ucciso
+    a meta' scansione — misurato, non temuto. Il collector gira sulla stessa
+    macchina: e' gia' successo che un esaurimento di memoria lo congelasse per
+    82 minuti, ed e' il buco piu' lungo dell'intera raccolta.
+    """
+    drop(con, tmp)
+    for channel, coin in partitions:
+        accumulate(con, tmp, sql_for(read(glob_partition(data_dir, channel, coin))))
+    rows = _rows(con, f"SELECT * FROM {tmp} ORDER BY channel, coin", cols)
+    drop(con, tmp)
+    return rows
+
+
+def duplicates(con, data_dir: str, partitions) -> list[dict]:
     """Duplicati esatti, payload ripetuti, timestamp ripetuti.
 
     Tre livelli distinti perche' significano cose diverse:
@@ -52,11 +73,14 @@ def duplicates(con, data_dir: str) -> list[dict]:
     duplicato riportato e' vero e un conteggio puo' al piu' sovrastimare di
     uno-due su decine di milioni. Confrontare le stringhe intere costerebbe
     l'ordine dei GB di memoria per il DISTINCT.
+
+    Una query per partizione, non una su tutti i file: vedi `per_partizione`.
     """
-    src = read(glob_all(data_dir))
-    return _rows(
-        con,
-        f"""
+    cols = ["channel", "coin", "n_rows", "n_exact_dup", "n_payload_dup",
+            "n_dup_ts_local", "n_dup_ts_exch"]
+    return per_partizione(
+        con, data_dir, partitions, "_dup_raw", cols,
+        lambda src: f"""
         SELECT channel,
                CASE WHEN coin = '' THEN '_global' ELSE coin END AS coin,
                count(*)                                                  AS n_rows,
@@ -68,14 +92,12 @@ def duplicates(con, data_dir: str) -> list[dict]:
                  - count(DISTINCT ts_exch_ms) FILTER (WHERE ts_exch_ms <> 0)
                                                                          AS n_dup_ts_exch
         FROM {src}
-        GROUP BY 1, 2 ORDER BY 1, 2
+        GROUP BY 1, 2
         """,
-        ["channel", "coin", "n_rows", "n_exact_dup", "n_payload_dup",
-         "n_dup_ts_local", "n_dup_ts_exch"],
     )
 
 
-def build_ordered(con, data_dir: str) -> None:
+def build_ordered(con, data_dir: str, partitions) -> None:
     """Materializza le righe nell'ordine in cui sono state scritte.
 
     L'ordine di scrittura e' (part-file, riga dentro il file): il writer
@@ -84,10 +106,14 @@ def build_ordered(con, data_dir: str) -> None:
     senza assumere che i timestamp siano gia' ordinati — che e' proprio la
     cosa che stiamo verificando.
     """
-    src = read(glob_all(data_dir), filename=True, file_row_number=True)
-    con.execute(
-        rf"""
-        CREATE OR REPLACE TABLE ts_ordered AS
+    drop(con, "ts_ordered")
+    for channel, coin in partitions:
+        src = read(glob_partition(data_dir, channel, coin),
+                   filename=True, file_row_number=True)
+        accumulate(
+            con,
+            "ts_ordered",
+            rf"""
         WITH r AS (
             SELECT channel,
                    CASE WHEN coin = '' THEN '_global' ELSE coin END AS coin,
@@ -102,8 +128,8 @@ def build_ordered(con, data_dir: str) -> None:
                ts_local_ns - lag(ts_local_ns)
                    OVER (PARTITION BY channel, coin ORDER BY part_ns, rn) AS delta_ns
         FROM r
-        """
-    )
+        """,
+        )
 
 
 def monotonicity(con) -> list[dict]:
@@ -174,7 +200,7 @@ def exch_ts_zero(con) -> list[dict]:
     )
 
 
-def latency(con, data_dir: str) -> list[dict]:
+def latency(con, data_dir: str, partitions) -> list[dict]:
     """Distribuzione di (ts_local_ms - ts_exch_ms) per i canali che espongono
     il timestamp dell'exchange.
 
@@ -184,10 +210,10 @@ def latency(con, data_dir: str) -> list[dict]:
     Per `backfill_*` e' il tempo della richiesta REST. Solo `l2Book` e `trades`
     misurano davvero un ritardo exchange -> host.
     """
-    src = read(glob_all(data_dir))
-    return _rows(
-        con,
-        f"""
+    cols = ["channel", "coin", "n", "min_ms", "q", "max_ms", "mean_ms", "n_negative"]
+    return per_partizione(
+        con, data_dir, partitions, "_lat_raw", cols,
+        lambda src: f"""
         SELECT channel,
                CASE WHEN coin = '' THEN '_global' ELSE coin END AS coin,
                count(*)                                  AS n,
@@ -200,9 +226,8 @@ def latency(con, data_dir: str) -> list[dict]:
             SELECT channel, coin, ts_local_ns / 1e6 - ts_exch_ms AS lat
             FROM {src} WHERE ts_exch_ms <> 0
         )
-        GROUP BY 1, 2 ORDER BY 1, 2
+        GROUP BY 1, 2
         """,
-        ["channel", "coin", "n", "min_ms", "q", "max_ms", "mean_ms", "n_negative"],
     )
 
 
@@ -299,28 +324,7 @@ def coherence_worst(con, limit: int) -> list[dict]:
     )
 
 
-def trade_id_duplicates(con, data_dir: str) -> list[dict]:
-    """Il `tid` di un trade e' l'identificatore dell'esecuzione: se lo stesso
-    tid compare due volte, lo stesso trade e' stato consegnato due volte —
-    tipicamente dopo una riconnessione. Contarlo qui evita che un giorno un
-    backtest sommi due volte lo stesso volume."""
-    src = read(glob_channel(data_dir, "trades"))
-    return _rows(
-        con,
-        f"""
-        WITH t AS (
-            SELECT coin, unnest(json_extract(raw, '$[*].tid')) AS tid
-            FROM {src}
-        )
-        SELECT coin, count(*) AS n_trades, count(DISTINCT tid) AS n_distinct_tid,
-               count(*) - count(DISTINCT tid) AS n_dup_tid
-        FROM t GROUP BY 1 ORDER BY 1
-        """,
-        ["coin", "n_trades", "n_distinct_tid", "n_dup_tid"],
-    )
-
-
-def partition_drift(con, data_dir: str) -> list[dict]:
+def partition_drift(con, data_dir: str, partitions) -> list[dict]:
     """Righe finite in una directory `date=`/`hour=` diversa dall'ora del loro
     `ts_local_ns`, e righe la cui colonna `coin` non coincide con la directory.
 
@@ -329,10 +333,11 @@ def partition_drift(con, data_dir: str) -> list[dict]:
     contare i file per ora sarebbe sbagliato. Il secondo caso non e' atteso da
     niente: significherebbe dati archiviati sotto la coin sbagliata.
     """
-    src = read(glob_all(data_dir), filename=True)
-    return _rows(
-        con,
-        rf"""
+    cols = ["channel", "coin", "n_rows", "n_hour_drift", "n_coin_mismatch",
+            "n_channel_mismatch"]
+    return per_partizione(
+        con, data_dir, partitions, "_drift_raw", cols,
+        lambda src: rf"""
         WITH r AS (
             SELECT channel,
                    CASE WHEN coin = '' THEN '_global' ELSE coin END AS row_coin,
@@ -350,8 +355,6 @@ def partition_drift(con, data_dir: str) -> list[dict]:
                ) AS n_hour_drift,
                count(*) FILTER (WHERE dir_coin <> row_coin) AS n_coin_mismatch,
                count(*) FILTER (WHERE dir_channel <> channel) AS n_channel_mismatch
-        FROM r GROUP BY 1, 2 ORDER BY 1, 2
+        FROM r GROUP BY 1, 2
         """,
-        ["channel", "coin", "n_rows", "n_hour_drift", "n_coin_mismatch",
-         "n_channel_mismatch"],
     )
