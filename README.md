@@ -209,6 +209,58 @@ evento che il parser condiviso non conosce — va guardato, non ignorato.
 Il log del collector resta comunque utile per il contesto: tienilo, non
 ruotarlo via.
 
+### I buchi si derivano dai dati; il registro conferma e spiega
+
+> **L'assenza di righe e' la misura. `_gaps.jsonl` e' una dichiarazione.** Un
+> buco esiste se i dati mancano, non se il collector ha scritto che mancavano.
+> Il registro serve a dire *perche'* la raccolta si e' fermata, non *se* si e'
+> fermata.
+
+L'ordine conta perche' il registro e' affidabile solo **dal 2026-08-14 20:33 in
+poi**. Prima di quella data chiudeva le finestre alla riconnessione della socket
+invece che alla ripresa effettiva dei dati (vedi sopra), quindi ne sottostimava
+la durata — nel caso dell'8 agosto un'assenza reale di 92,9s su tutte e quattro
+le coin di `trades` compariva come 1,5s. Un'esclusione statistica alimentata da
+quel registro e' buona solo quanto il registro: quel buco restava dentro le
+statistiche come intervallo valido.
+
+Quindi il catalogo **misura prima e legge il registro dopo**. Per ogni
+partizione (canale, coin) calcola il p99 degli intervalli fra righe consecutive
+e chiama buco ogni intervallo che supera `--gap-p99-multiple` volte quel p99,
+con un pavimento di `--gap-min-s` secondi. La soglia e' per partizione perche' su
+un giorno reale il p99 di `trades/BTC` e' 2,8s e quello di `trades/ETH` 17,0s:
+una soglia unica di canale sarebbe dettata dalla coin piu' lenta. Sono questi
+buchi — non le finestre del registro — a essere esclusi dalla distribuzione
+degli intervalli.
+
+Il registro entra dopo, per la riconciliazione, che pubblica **tre insiemi
+distinti** (punto 2.1 del report):
+
+1. **buchi spiegati** — assenza nei dati che una finestra registrata copre. Per
+   ognuno viene riportato di quanto la finestra **sottostima** la durata
+   osservata: e' la misura diretta della qualita' del registro nel tempo,
+   aggregata per giorno UTC;
+2. **buchi non spiegati** — assenza nei dati che nessuna finestra tocca: la
+   raccolta si e' fermata e il collector non se n'e' accorto;
+3. **finestre senza assenza** — il registro dichiara un'interruzione che nei
+   dati non si vede. Una finestra piu' corta della soglia di rilevamento e'
+   invisibile per costruzione e non e' un errore; una lunga lo e'.
+
+Questo **non contraddice l'invariante 8** ("il silenzio di uno stream non
+significa mai assenza di eventi"). L'invariante vieta di concludere *non e'
+successo niente* dal silenzio, e di prenderci decisioni operative. Qui il
+silenzio porta alla conclusione opposta e conservativa: *non sappiamo cosa e'
+successo*, quindi quell'intervallo esce dalle statistiche e viene stampato. Il
+costo di un falso positivo e' un intervallo perso; quello di un falso negativo
+e' una statistica che sembra sana.
+
+Cosa questo metodo **non** usa: la simultaneita' fra canali, che sarebbe il
+segnale piu' forte — un'interruzione della raccolta ferma tutti i canali nello
+stesso istante, una pausa di mercato no. Il rilevamento e' per partizione e
+indipendente, quindi un silenzio isolato su una coin poco scambiata puo'
+comparire fra i non spiegati. Il report mostra gli estremi cosi' che il caso si
+riconosca (stessi estremi su quattro coin = interruzione), ma non lo decide.
+
 ## Catalogo (`python -m catalog`)
 
 Report di integrita' sui parquet, in sola lettura sulla directory dati:
@@ -217,8 +269,20 @@ Report di integrita' sui parquet, in sola lettura sulla directory dati:
 python -m catalog --data-dir /home/ubuntu/hl-data/mainnet --out-dir ~/hl-reports
 ```
 
-Produce `report.txt`, `summary.json` e `hourly_metrics.parquet` (una riga per
-canale/coin/ora). Due scelte che conviene conoscere prima di leggerlo:
+Produce `report.txt`, `summary.json`, `hourly_metrics.parquet` (una riga per
+canale/coin/ora), `intervals.parquet` (una riga per canale/coin) e
+`derived_gaps.parquet` (una riga per buco osservato: canale, coin, estremi,
+durata, soglia in vigore). Tre scelte che conviene conoscere prima di leggerlo:
+
+**I buchi vengono misurati sui dati, non letti dal registro** — vedi la sezione
+sopra. Le due manopole sono `--gap-p99-multiple` (default 5) e `--gap-min-s`
+(default 30). Non sono tarate su un risultato: il fattore viene dalla forma
+della distribuzione (sui dati reali il p999 sta circa a 1,4 volte il p99, quindi
+la coda naturale muore ben prima di 5 volte), il pavimento esiste perche' su
+`activeAssetCtx` cinque volte il p99 sono sette secondi e sette secondi di
+silenzio non sono un'interruzione. Il report stampa per ogni partizione il p99
+misurato, la soglia applicata e quanti buchi ha trovato: chi non e' d'accordo
+puo' cambiarli senza rifare i conti a mano.
 
 **`low_volume` si alza solo sui canali a cadenza fissa.** `l2Book`,
 `activeAssetCtx` e `allMids` arrivano a intervalli regolari qualunque cosa

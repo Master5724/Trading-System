@@ -1,22 +1,21 @@
 """Test della distribuzione degli intervalli fra messaggi e della verifica
 di classificazione dei canali.
 
-Tre difetti da coprire, e per ognuno la prova che il test sa fallire:
+Due difetti da coprire, e per ognuno la prova che il test sa fallire:
 
-1. **Gli intervalli dentro un buco registrato inquinano la distribuzione.**
+1. **Gli intervalli che sono un buco inquinano la distribuzione.**
    `TestBuchiEsclusi` misura una serie regolare interrotta da un'interruzione
    di 600 s; `TestLaVerificaSaFallire.test_senza_esclusione_*` rifa' lo stesso
-   conto con l'esclusione disattivata e pretende che le asserzioni esplodano.
+   conto con l'esclusione disattivata (soglia irraggiungibile) e pretende che
+   le asserzioni esplodano.
 
-2. **Il contratto di lettura di `_gaps.jsonl` e' "tutti i record con una
-   durata", non "event == close".** `TestContrattoDelRegistro` scrive un
-   evento che il parser condiviso non conosce e verifica che l'intervallo
-   venga escluso lo stesso; la variante col difetto usa solo
-   `collector.gaps.load_windows` e mostra che il buco tornerebbe dentro.
-
-3. **La classificazione "a cadenza fissa" e' dichiarata, non misurata.**
+2. **La classificazione "a cadenza fissa" e' dichiarata, non misurata.**
    `TestVerdetto` costruisce un canale dichiarato fisso che si comporta a
    raffiche e pretende `smentito`.
+
+I buchi che alimentano l'esclusione si derivano dai dati (`derivedgaps`), non
+dal registro: la riconciliazione fra le due fonti e i suoi test stanno in
+`test_catalog_derived_gaps.py`.
 
 Tutto su directory temporanee: i dati di produzione sono scritti da un
 collector vivo, cambiano sotto i piedi e sono in sola lettura.
@@ -24,7 +23,6 @@ collector vivo, cambiano sotto i piedi e sono in sola lettura.
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 import tempfile
@@ -32,7 +30,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from catalog import dataset, gapwindows, intervals, metrics, sanity
+from catalog import dataset, derivedgaps, gapwindows, intervals, metrics, sanity
 from tests.catalog_fixture import BASE_HOUR_IDX, NS_PER_HOUR, write_partition
 
 NS = 1_000_000_000
@@ -69,13 +67,22 @@ class Base(unittest.TestCase):
         self.data_dir = os.path.join(self.tmp.name, "dati")
         self.addCleanup(self.tmp.cleanup)
 
-    def build(self, windows=(), fixed_rate=None):
-        """Costruisce `ts_ordered` e `intervals` sulla data_dir corrente."""
+    def build(self, fixed_rate=None, p99_multiple=None, min_gap_s=None):
+        """Costruisce `ts_ordered`, le soglie di buco e `intervals`.
+
+        Le soglie vanno costruite prima: sono la sorgente dell'esclusione.
+        `p99_multiple`/`min_gap_s` servono ai test che disattivano la logica."""
         con = dataset.connect(os.path.join(self.tmp.name, "tmpdb"))
         self.addCleanup(con.close)
         partitions = dataset.discover(self.data_dir)
         sanity.build_ordered(con, self.data_dir, partitions)
-        intervals.build(con, list(windows))
+        derivedgaps.build_thresholds(
+            con,
+            derivedgaps.DEFAULT_P99_MULTIPLE if p99_multiple is None else p99_multiple,
+            derivedgaps.DEFAULT_MIN_GAP_S if min_gap_s is None else min_gap_s,
+        )
+        derivedgaps.build(con)
+        intervals.build(con)
         self.rows = {(r["channel"], r["coin"]): r for r in intervals.stats(con)}
         if fixed_rate is not None:
             self.classi = {
@@ -164,22 +171,16 @@ def serie_con_buco() -> list[tuple]:
     return rows
 
 
-# La finestra registrata sta DENTRO il buco: inizia un secondo dopo l'ultimo
-# messaggio e finisce un secondo prima del primo della ripresa. Cosi' l'unico
-# intervallo che la interseca e' quello che scavalca l'interruzione, e i due
-# intervalli adiacenti restano dentro la statistica: se il codice usasse una
-# regola di sovrapposizione piu' larga, il test se ne accorgerebbe.
-BUCO_START_MS = BASE_MS + (PRIMA - 1) * 1000 + 1000
-BUCO_END_MS = BUCO_START_MS + (BUCO_S - 2) * 1000
-
-
 class TestBuchiEsclusi(Base):
+    """L'esclusione non ha bisogno di nessun registro: il buco da 600 s supera
+    la soglia della partizione (max(5 x p99, 30 s) = 30 s) e per questo esce."""
+
     def setUp(self):
         super().setUp()
         write_partition(self.data_dir, "l2Book", "BTC", serie_con_buco())
 
     def test_l_intervallo_del_buco_non_entra(self):
-        self.build([window(BUCO_START_MS, BUCO_END_MS)])
+        self.build()
         r = self.riga("l2Book")
         self.assertEqual(r["n_pairs"], PRIMA + DOPO - 1)
         self.assertEqual(r["n_excluded_gap"], 1)
@@ -190,77 +191,31 @@ class TestBuchiEsclusi(Base):
         self.assertAlmostEqual(r["ratio_p99_p50"], 1.0)
 
     def test_gli_intervalli_adiacenti_restano(self):
-        """Escludere per intersezione non deve diventare escludere il vicinato:
-        n_excluded_gap == 1 lo dice, e il conteggio finale lo conferma."""
-        con = self.build([window(BUCO_START_MS, BUCO_END_MS)])
+        """Escludere il buco non deve diventare escludere il vicinato: esce un
+        intervallo solo, e gli altri 798 restano tutti."""
+        con = self.build()
         n_uno_secondo = con.execute(
             "SELECT n FROM intervals WHERE channel = 'l2Book'"
         ).fetchone()[0]
         self.assertEqual(n_uno_secondo, PRIMA + DOPO - 2)
 
-    def test_finestra_che_tocca_il_bordo_non_esclude(self):
-        """Una finestra che finisce esattamente dove comincia un intervallo non
-        lo interseca. Con `>=` invece di `>` il conto salterebbe."""
-        fine_ms = BASE_MS + 10 * 1000
-        self.build([window(fine_ms - 5000, fine_ms)])
-        r = self.riga("l2Book")
-        self.assertEqual(r["n_excluded_gap"], 5)
+    def test_la_soglia_usata_e_pubblicata(self):
+        """Con max_s limitato dalla soglia per costruzione, chi legge la tabella
+        deve poter vedere quale soglia era in vigore."""
+        self.build()
+        self.assertAlmostEqual(self.riga("l2Book")["gap_threshold_s"],
+                               derivedgaps.DEFAULT_MIN_GAP_S)
 
-    def test_finestra_che_copre_tutto(self):
-        self.build([window(BASE_MS - 1000, BASE_MS + 10_000_000)])
+    def test_soglia_bassissima_esclude_quasi_tutto(self):
+        """Il caso opposto: con una soglia sotto la cadenza normale ogni
+        intervallo diventa un buco. Serve a provare che l'esclusione segue
+        davvero la soglia e non un valore cablato."""
+        self.build(min_gap_s=0.5, p99_multiple=0.1)
         r = self.riga("l2Book")
         self.assertEqual(r["n"], 0)
         self.assertEqual(r["n_excluded_gap"], PRIMA + DOPO - 1)
         self.assertIsNone(r["median_s"])
         self.assertIsNone(r["ratio_p99_p50"])
-
-
-class TestFinestreFuse(unittest.TestCase):
-    """Il join che esclude gli intervalli cerca l'ULTIMA finestra che inizia
-    prima della fine dell'intervallo. Quel ragionamento vale solo se le
-    finestre sono disgiunte, e nel registro vero non lo sono."""
-
-    def test_sovrapposte_e_annidate(self):
-        w = [window(1000, 2000), window(1500, 1800), window(1900, 3000)]
-        self.assertEqual(intervals.merge_windows(w),
-                         [(1000 * 10**6, 3000 * 10**6)])
-
-    def test_disgiunte_restano_separate(self):
-        w = [window(1000, 2000), window(5000, 6000)]
-        self.assertEqual(len(intervals.merge_windows(w)), 2)
-
-    def test_adiacenti_vengono_fuse(self):
-        w = [window(1000, 2000), window(2000, 3000)]
-        self.assertEqual(intervals.merge_windows(w),
-                         [(1000 * 10**6, 3000 * 10**6)])
-
-    def test_registro_vuoto(self):
-        self.assertEqual(intervals.merge_windows([]), [])
-
-
-class TestContrattoDelRegistro(Base):
-    """`_gaps.jsonl` non contiene solo open/close: contiene `manual`, `resume`,
-    e domani conterra' qualcosa che oggi non esiste. Il contratto e' "tutti i
-    record che dichiarano una durata"."""
-
-    def setUp(self):
-        super().setUp()
-        write_partition(self.data_dir, "l2Book", "BTC", serie_con_buco())
-        self.gaps = os.path.join(self.tmp.name, "_gaps.jsonl")
-        with open(self.gaps, "w", encoding="utf-8") as f:
-            f.write(json.dumps({
-                "event": "blackout_ricostruito_a_mano",
-                "start_ms": BUCO_START_MS,
-                "duration_s": (BUCO_END_MS - BUCO_START_MS) / 1000.0,
-                "reason": "evento che il parser condiviso non conosce",
-            }) + "\n")
-
-    def test_evento_sconosciuto_esclude_lo_stesso(self):
-        windows = gapwindows.load(self.gaps, now_ms=BUCO_END_MS + 10**7)
-        self.assertEqual(len(windows), 1)
-        self.build(windows)
-        self.assertEqual(self.riga("l2Book")["n_excluded_gap"], 1)
-        self.assertAlmostEqual(self.riga("l2Book")["max_s"], 1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -367,7 +322,9 @@ class TestColonneNelParquet(Base):
         metrics.apply_gap_overlap(con)
         metrics.apply_low_volume(con, frozenset({"l2Book"}))
         sanity.build_ordered(con, self.data_dir, partitions)
-        intervals.build(con, [])
+        derivedgaps.build_thresholds(con)
+        derivedgaps.build(con)
+        intervals.build(con)
         classi = intervals.classify(intervals.stats(con), frozenset({"l2Book"}))
         intervals.attach_to_hourly(con, classi)
 
@@ -416,7 +373,8 @@ class TestLaVerificaSaFallire(Base):
         write_partition(self.data_dir, "l2Book", "BTC", serie_con_buco())
 
     def test_senza_esclusione_il_buco_rientra(self):
-        self.build([])  # nessuna finestra: esclusione disattivata
+        # Soglia irraggiungibile: rilevamento disattivato, il difetto e' dentro.
+        self.build(min_gap_s=10_000.0)
         r = self.riga("l2Book")
         with self.assertRaises(AssertionError):
             self.assertAlmostEqual(r["max_s"], 1.0)
@@ -433,41 +391,37 @@ class TestLaVerificaSaFallire(Base):
         oltre il p99 — quindi qui il difetto si vede sul massimo e sulla media,
         non sul verdetto: e' il motivo per cui il report pubblica anche
         `max_s` e `esclusi_gap` e non solo l'indice."""
-        self.build([])
+        self.build(min_gap_s=10_000.0)
         r_rotto = self.riga("l2Book")
-        self.build([window(BUCO_START_MS, BUCO_END_MS)])
+        self.build()
         r_pulito = self.riga("l2Book")
         self.assertGreater(r_rotto["max_s"], 100 * r_pulito["max_s"])
         self.assertGreater(r_rotto["mean_s"], r_pulito["mean_s"])
         with self.assertRaises(AssertionError):
             self.assertAlmostEqual(r_rotto["mean_s"], r_pulito["mean_s"], places=3)
 
-    def test_col_filtro_su_event_close_il_buco_sparisce(self):
-        """La mutazione del contratto di lettura: leggere il registro con il
-        solo parser condiviso (che ignora gli eventi sconosciuti) invece che
-        con `gapwindows.load`. La finestra non esiste piu' e l'intervallo del
-        buco rientra nella statistica."""
-        from collector.gaps import load_windows
+    def test_col_registro_al_posto_dei_dati_il_buco_sopravvive(self):
+        """La mutazione che questa modifica rimuove: escludere in base al
+        registro invece che ai dati. Il registro qui dichiara una finestra da
+        due secondi mentre l'assenza vera dura 600 s — e' il difetto misurato
+        sui dati veri prima del 14 agosto 2026. Escludendo per finestra
+        l'intervallo del buco resterebbe dentro la statistica; escludendo per
+        soglia esce, e la riconciliazione misura la differenza."""
+        buco_ms = BASE_MS + (PRIMA - 1) * 1000
+        corta = window(buco_ms, buco_ms + 2000)
 
-        gaps = os.path.join(self.tmp.name, "_gaps.jsonl")
-        with open(gaps, "w", encoding="utf-8") as f:
-            f.write(json.dumps({
-                "event": "blackout_ricostruito_a_mano",
-                "start_ms": BUCO_START_MS,
-                "duration_s": (BUCO_END_MS - BUCO_START_MS) / 1000.0,
-            }) + "\n")
+        self.build()
+        pulito = self.riga("l2Book")
+        self.assertEqual(pulito["n_excluded_gap"], 1)
+        self.assertAlmostEqual(pulito["max_s"], 1.0)
 
-        col_difetto = [
-            g for g in load_windows(gaps) if g.end_ms is not None
-        ]
-        self.assertEqual(col_difetto, [], "il parser condiviso ignora l'evento")
-        self.build(col_difetto)
-        with self.assertRaises(AssertionError):
-            self.assertEqual(self.riga("l2Book")["n_excluded_gap"], 1)
-
-        corretto = gapwindows.load(gaps, now_ms=BUCO_END_MS + 10**7)
-        self.build(corretto)
-        self.assertEqual(self.riga("l2Book")["n_excluded_gap"], 1)
+        rec = derivedgaps.reconcile(
+            [derivedgaps.DerivedGap("l2Book", "BTC", buco_ms * 10**6,
+                                    (buco_ms + BUCO_S * 1000) * 10**6)],
+            [corta],
+        )
+        self.assertEqual(rec["totali"]["n_spiegati"], 1)
+        self.assertAlmostEqual(rec["spiegati"][0]["sottostima_s"], BUCO_S - 2)
 
     def test_senza_verifica_di_classificazione_nessuno_se_ne_accorge(self):
         """Un l2Book a raffiche resta dichiarato a cadenza fissa: e' proprio la

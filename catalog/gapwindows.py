@@ -200,6 +200,41 @@ def _count_events(records: list[dict]) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
+def merge_spans(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Intervalli fusi in una lista disgiunta e ordinata, stessa unita' di
+    misura in ingresso e in uscita.
+
+    Serve alla correttezza dei confronti, non alla velocita': chi cerca
+    sovrapposizioni per bisect assume "fine della precedente <= inizio della
+    successiva", e nel registro reale le finestre si sovrappongono eccome — un
+    record `resume` per canale sta dentro la finestra aggregata che lo ha
+    generato. Anche gli intervalli che si toccano vengono fusi, cosi'
+    l'invariante resta stretta.
+    """
+    if not spans:
+        return []
+    ordered = sorted(spans)
+    merged: list[list[int]] = [[ordered[0][0], ordered[0][1]]]
+    for start, end in ordered[1:]:
+        if start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return [(s, e) for s, e in merged]
+
+
+def merge_windows(windows: list[Window]) -> list[tuple[int, int]]:
+    """Finestre del registro fuse in intervalli disgiunti, in NANOsecondi.
+
+    Il registro parla in millisecondi, i dati in nanosecondi: la conversione sta
+    qui, una volta sola, invece che in ogni confronto.
+    """
+    return [
+        (s * 1_000_000, e * 1_000_000)
+        for s, e in merge_spans([(w.start_ms, w.end_ms) for w in windows])
+    ]
+
+
 def materialize(con, windows: list[Window], table: str = "gap_windows") -> None:
     """Crea la tabella DuckDB delle finestre. Vuota se il registro non esiste:
     l'assenza del file non e' un errore fatale, ma il report deve dirlo."""
