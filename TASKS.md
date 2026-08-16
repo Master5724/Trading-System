@@ -78,6 +78,15 @@ rosso — un test che non può fallire non è un test.
 > restart), gestione esplicita dei rifiuti, e logging di ogni richiesta e
 > risposta su file.
 > Nessuna logica di strategia. Nessun ordine inviato senza flag esplicito.
+>
+> **Riconciliazione dopo ogni riconnessione.** La riconciliazione dello stato
+> via REST non va fatta solo all'avvio, ma dopo OGNI riconnessione del
+> WebSocket. Evidenza: dopo una riconnessione un singolo canale può restare
+> muto oltre 100 secondi mentre gli altri funzionano (misurato l'8 e il 15
+> agosto 2026, su canali diversi). Se quel canale è `userFills` o
+> `orderUpdates`, il sistema resterebbe convinto di non avere fill mentre ne
+> ha, o di avere una posizione diversa da quella reale. Lo stato operativo va
+> sempre riletto dall'exchange, mai dedotto dal silenzio dello stream.
 
 **Nota:** prima di fidarsi degli ack sui canali utente (`userFills`,
 `orderUpdates`), verificare come il server rimanda indietro l'indirizzo
@@ -101,6 +110,12 @@ dove un bug non ti dà un errore, ti dà una posizione che non volevi.
 > Lo stato "disabilitato" deve persistere su disco: un restart non lo azzera.
 > Verifica che stop e take-profit siano ordini nativi sull'exchange
 > (invariante 3).
+>
+> **Trigger aggiuntivo — canale fermo oltre soglia.** Se un canale necessario
+> all'operatività non produce dati oltre una soglia configurata, il sistema
+> deve considerarsi cieco e attivare il kill switch, anche se la connessione
+> risulta viva e gli altri canali funzionano. Il silenzio di un singolo canale
+> è già stato osservato due volte in due settimane di raccolta.
 
 **L'ultimo punto è quello che conta.** Se un restart riabilita il sistema, il
 kill switch non esiste.
