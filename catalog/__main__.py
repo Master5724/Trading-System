@@ -16,7 +16,17 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from . import dataset, funding, gapwindows, metrics, report, sanity, spread, trades
+from . import (
+    dataset,
+    funding,
+    gapwindows,
+    intervals,
+    metrics,
+    report,
+    sanity,
+    spread,
+    trades,
+)
 
 
 def _log(msg: str) -> None:
@@ -157,6 +167,22 @@ def run(args: argparse.Namespace) -> dict:
     res["monotonicity"] = sanity.monotonicity(con)
     res["monotonicity_breaks"] = sanity.monotonicity_breaks(con, args.max_rows)
     res["interarrival"] = sanity.interarrival(con)
+
+    # Distribuzione degli intervalli al netto dei buchi registrati, e verifica
+    # della classificazione dichiarata. Va qui e non prima: legge `ts_ordered`,
+    # che e' appena stata materializzata da `build_ordered`.
+    n_merged = step("intervalli", lambda: intervals.build(con, windows))
+    res["intervals"] = intervals.stats(con)
+    res["interval_class"] = intervals.classify(res["intervals"], fixed_rate)
+    res["interval_meta"] = {
+        "n_windows": len(windows),
+        "n_windows_merged": n_merged,
+        "ratio_fixed_max": intervals.RATIO_FIXED_MAX,
+        "ratio_regular_max": intervals.RATIO_REGULAR_MAX,
+        "min_intervals": intervals.MIN_INTERVALS,
+    }
+    intervals.attach_to_hourly(con, res["interval_class"])
+
     res["exch_ts_zero"] = sanity.exch_ts_zero(con)
     res["latency"] = step("latenza", lambda: sanity.latency(con, data_dir, partitions))
     res["partition_drift"] = step(
@@ -201,6 +227,8 @@ def run(args: argparse.Namespace) -> dict:
     # --- output --------------------------------------------------------------
     parquet_path = os.path.join(out_dir, "hourly_metrics.parquet")
     n_hourly = metrics.write_parquet(con, parquet_path)
+    intervals_path = os.path.join(out_dir, "intervals.parquet")
+    intervals.write_parquet(con, intervals_path)
 
     total_rows = sum(r["n_rows"] for r in res["coverage"])
     first_ns = min((r["first_ts_ns"] for r in res["coverage"] if r["first_ts_ns"]),
@@ -219,6 +247,7 @@ def run(args: argparse.Namespace) -> dict:
         "elapsed_s": time.time() - t_start,
         "hourly_rows": n_hourly,
         "parquet": parquet_path,
+        "parquet_intervals": intervals_path,
     }
 
     lines = report.build(res)
@@ -230,6 +259,7 @@ def run(args: argparse.Namespace) -> dict:
 
     print(text)
     _log(f"parquet: {parquet_path} ({n_hourly} righe)")
+    _log(f"parquet: {intervals_path} ({len(res['intervals'])} righe)")
     con.close()
     return res
 

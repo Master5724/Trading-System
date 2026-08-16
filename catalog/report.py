@@ -69,6 +69,79 @@ def section(title: str) -> list[str]:
     return ["", RULE, title, RULE]
 
 
+def _intervals_section(res: dict) -> list[str]:
+    """1.1 — intervalli al netto dei buchi, e verifica della classificazione.
+
+    Il verdetto viene stampato per esteso solo quando contesta qualcosa. Un
+    elenco di quattordici righe che dicono tutte "coerente" e' rumore; le
+    smentite devono restare leggibili anche quando sono una sola.
+    """
+    rows = res.get("intervals") or []
+    classes = res.get("interval_class") or []
+    meta = res.get("interval_meta") or {}
+    L = [
+        "",
+        "1.1 Regolarita' degli arrivi (intervalli al netto dei buchi registrati)",
+        "",
+        "Un intervallo che interseca una finestra di _gaps.jsonl viene escluso:",
+        "misurerebbe la disconnessione, non la cadenza dell'exchange. Le finestre",
+        "sono le stesse del punto 2 (tutti i record con una durata, qualunque sia",
+        f"`event`), fuse in {_f(meta.get('n_windows_merged'))} intervalli disgiunti",
+        f"a partire da {_f(meta.get('n_windows'))} finestre.",
+        "",
+        "  indice = p99 / mediana. Vicino a 1 = metronomo; molto sopra 1 = raffiche.",
+        "",
+    ]
+    L += table(
+        rows,
+        [("channel", "canale", 0), ("coin", "coin", 0), ("n", "intervalli", 0),
+         ("median_s", "mediana_s", 4), ("p90_s", "p90_s", 4), ("p99_s", "p99_s", 4),
+         ("max_s", "max_s", 3), ("mean_s", "media_s", 4),
+         ("ratio_p99_p50", "indice", 2),
+         ("n_excluded_gap", "esclusi_gap", 0),
+         ("n_excluded_negative", "esclusi_neg", 0)],
+    )
+    L += [
+        "",
+        "  esclusi_gap = intervalli scartati perche' dentro una disconnessione.",
+        "  esclusi_neg = intervalli con durata negativa (passo indietro di",
+        "                ts_local_ns). Devono essere 0; se non lo sono, li elenca",
+        "                per esteso il punto 3.2.",
+        "",
+        "Verifica della classificazione dichiarata",
+        "",
+        f"  Dichiarati a cadenza fissa: "
+        + (", ".join(res.get("fixed_rate_channels") or []) or "(nessuno)"),
+        f"  Smentita se dichiarato fisso e indice > {_f(meta.get('ratio_fixed_max'), 1)};",
+        f"  segnalato come regolare non dichiarato se indice < "
+        f"{_f(meta.get('ratio_regular_max'), 1)}.",
+        "  Soglie fissate a priori, non tarate sui dati: l'indice grezzo e' nella",
+        "  tabella sopra, quindi il verdetto si puo' contestare senza rifare i conti.",
+        "  Il catalogo NON riscrive l'elenco: segnala e basta.",
+        "",
+    ]
+    contestati = [c for c in classes if c["verdict"] not in ("coerente", "non_valutato")]
+    if contestati:
+        L += ["  Partizioni la cui classificazione NON e' confermata dai numeri:"]
+        L += table(
+            contestati,
+            [("channel", "canale", 0), ("coin", "coin", 0),
+             ("declared_fixed_rate", "dichiarato", 0),
+             ("ratio_p99_p50", "indice", 2), ("verdict", "verdetto", 0),
+             ("nota", "nota", 0)],
+        )
+    else:
+        L += ["  Nessuna smentita: ogni canale si comporta come dichiarato."]
+    non_valutate = [c for c in classes if c["verdict"] == "non_valutato"]
+    if non_valutate:
+        L += [
+            "",
+            "  Non valutate (" + str(len(non_valutate)) + "): "
+            + ", ".join(f"{c['channel']}/{c['coin']}" for c in non_valutate),
+        ]
+    return L
+
+
 def build(res: dict) -> list[str]:
     L: list[str] = []
     m = res["meta"]
@@ -101,13 +174,22 @@ def build(res: dict) -> list[str]:
          ("rows_per_hour_mean", "righe/ora_avg", 1)],
     )
 
-    L += ["", "Cadenza fra messaggi consecutivi (secondi):"]
+    L += [
+        "",
+        "Cadenza fra messaggi consecutivi (secondi), distribuzione GREZZA:",
+        "include anche gli intervalli caduti dentro una disconnessione, quindi",
+        "`pausa_max_s` misura il buco piu' lungo e non la cadenza del canale.",
+        "La versione ripulita, quella da cui si deriva la soglia di staleness,",
+        "e' in 1.1.",
+    ]
     L += quantile_table(res["interarrival"], "q", "percentili del delta di arrivo", 3)
     L += table(
         res["interarrival"],
         [("channel", "canale", 0), ("coin", "coin", 0), ("mean_s", "media_s", 3),
          ("max_s", "pausa_max_s", 1)],
     )
+
+    L += _intervals_section(res)
 
     # ------------------------------------------------------------------ 2
     L += section("2. FINESTRE INAFFIDABILI")
