@@ -39,6 +39,9 @@ Quindi il codice deve essere leggibile e giustificato, non solo funzionante.
 7. **Niente ottimizzazione di parametri.** Non fare grid search, non "tarare"
    soglie, non proporre indicatori aggiuntivi per migliorare una metrica. Se
    un risultato sembra debole, è un'informazione, non un problema da risolvere.
+8. **Il silenzio di uno stream non significa mai assenza di eventi.** Nessuna
+   decisione operativa può basarsi sul fatto che un canale non abbia inviato
+   nulla.
 
 ## Architettura
 
