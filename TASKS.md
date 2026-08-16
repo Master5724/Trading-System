@@ -116,6 +116,32 @@ dove un bug non ti dà un errore, ti dà una posizione che non volevi.
 > deve considerarsi cieco e attivare il kill switch, anche se la connessione
 > risulta viva e gli altri canali funzionano. Il silenzio di un singolo canale
 > è già stato osservato due volte in due settimane di raccolta.
+>
+> **Come si sceglie la soglia di staleness.** Non è un numero fisso e non va
+> indovinata: si deriva dai dati già raccolti. Il catalogo misura la
+> distribuzione degli intervalli fra messaggi per ogni canale e coin; la soglia
+> è un multiplo del p99 osservato per quel canale, ricalcolato periodicamente
+> dallo storico invece che scritto a mano nel config. Un canale che rallenta
+> perché il mercato è tranquillo non deve far scattare nulla; un canale che si
+> ferma sì.
+>
+> I canali si dividono in due classi con difese diverse:
+>
+> 1. **Canali di mercato** (`l2Book`, `activeAssetCtx`, `allMids`, `trades`,
+>    `candle`). Hanno una cadenza misurabile, quindi ammettono una soglia di
+>    staleness derivata come sopra.
+>
+> 2. **Canali utente** (`userFills`, `orderUpdates`). NON hanno cadenza
+>    naturale: possono legittimamente tacere per giorni, semplicemente perché
+>    non ci sono stati fill. Per questi nessuna soglia è possibile, e il
+>    silenzio non è mai informazione. L'unica difesa è la riconciliazione REST
+>    periodica dello stato: posizioni, ordini aperti ed equity vanno riletti
+>    dall'exchange a intervalli regolari, indipendentemente da cosa arrivi (o
+>    non arrivi) sullo stream.
+>
+> Conseguenza pratica: il kill switch usa la staleness per i canali di mercato,
+> e il disaccordo fra stato interno e stato riconciliato via REST per i canali
+> utente.
 
 **L'ultimo punto è quello che conta.** Se un restart riabilita il sistema, il
 kill switch non esiste.
