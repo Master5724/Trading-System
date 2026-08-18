@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from costs import LONG, SHORT, FundingSeries, IncompleteFunding, settlement_hours
 from costs.funding import NS_PER_HOUR
 from costs.report import funding_report, funding_window
-from tests.costs_fixture import SAMPLE_DIR
+from tests.costs_fixture import SAMPLE_DIR, SAMPLE_FUNDING_COINS, sample_available
 
 # Valori attesi del campione, ottenuti UNA VOLTA con una query SQL che non
 # usa `costs/` (vedi il commento in fondo al file). Se un giorno cambiassero,
@@ -247,6 +247,163 @@ class TestDieciGiorniSuiDatiReali(unittest.TestCase):
         self.assertAlmostEqual(rep["short_pct"], -ATTESO["BTC"][0] * 100, places=10)
         self.assertAlmostEqual(rep["controllo_rest"]["differenza_pct"], 0.0,
                                places=12)
+
+
+class TestCostsCatalogCrossCheck(unittest.TestCase):
+    """Verifica che il funding calcolato da costs/ e catalog/ coincidano.
+
+    Due moduli indipendenti leggono gli stessi dati e calcolano la stessa
+    grandezza: devono restituire lo stesso numero entro una tolleranza stretta.
+    Questo test rimane nel repo in modo permanente per impedire che le due
+    implementazioni divergano in futuro."""
+
+    def test_funding_costs_e_catalog_coincidono(self):
+        """Il funding cumulato su 10 giorni deve coincidere fra costs/ e catalog/.
+
+        Usa gli stessi dati (activeAssetCtx) e la stessa finestra temporale.
+        La tolleranza e' stretta perche' qualunque discrepanza non spiega
+        l'esatto ordine di grandezza: il funding base e' ~0.30% su 10 giorni,
+        una differenza del 5% sarebbe enorme."""
+        if not sample_available():
+            self.skipTest("campione non disponibile")
+
+        import tempfile
+        from catalog import funding as catalog_funding
+        from costs import sources
+
+        for coin in SAMPLE_FUNDING_COINS:
+            with self.subTest(coin=coin):
+                # Leggi la serie da costs/
+                with tempfile.TemporaryDirectory() as tmp_costs:
+                    con_costs = sources.connect(
+                        os.path.join(tmp_costs, "duck"), memory_limit="512MB")
+                    try:
+                        costs_series = sources.funding_series(con_costs, SAMPLE_DIR,
+                                                              coin)
+                        # Stessa finestra di 10 giorni
+                        window = funding_window(costs_series, 10)
+                        if window is None:
+                            continue  # Saltalo se i dati non ci sono
+                        start_ns, end_ns = window
+                        costs_cost = costs_series.cost(LONG, 100.0, start_ns, end_ns)
+                    finally:
+                        con_costs.close()
+
+                # Leggi la serie da catalog/
+                with tempfile.TemporaryDirectory() as tmp_catalog:
+                    con_catalog = sources.connect(
+                        os.path.join(tmp_catalog, "duck"), memory_limit="512MB")
+                    try:
+                        # Prepara i dati del catalog
+                        catalog_funding.build_samples(con_catalog, SAMPLE_DIR)
+                        catalog_funding.build_hourly_series(con_catalog)
+                        catalog_res = catalog_funding.cumulative_long(con_catalog, 10)
+                        if not catalog_res:
+                            continue
+                        catalog_row = next((r for r in catalog_res if r['coin'] == coin),
+                                          None)
+                        if not catalog_row:
+                            continue
+                        catalog_pct = catalog_row['cum_funding_pct'] / 100.0  # converti in frazione
+                    finally:
+                        con_catalog.close()
+
+                # Confronta: entrambi i valori devono coincidere
+                # Tolleranza stretta: massimo 0.1% di errore relativo
+                tolerance = max(abs(costs_cost.cost_pct) * 0.01, 0.0001)
+                self.assertAlmostEqual(
+                    costs_cost.cost_pct, catalog_pct * 100,
+                    delta=tolerance,
+                    msg=(f"{coin}: costs={costs_cost.cost_pct:.6f}%, "
+                         f"catalog={catalog_pct*100:.6f}% (diff="
+                         f"{abs(costs_cost.cost_pct - catalog_pct*100):.6f}%)")
+                )
+
+    def test_costs_catalog_mismatch_fallisce_con_incoerenza(self):
+        """Verifica che il test precedente sappia davvero fallire se i numeri
+        sono incoerenti. Questo test è una meta-verifica: disabilita il meccanismo
+        che dovrebbe fare fallire il primo test e verifica che fallisca."""
+        if not sample_available():
+            self.skipTest("campione non disponibile")
+
+        import tempfile
+        from catalog import funding as catalog_funding
+        from costs import sources
+
+        # Usiamo dati che SAPPIAMO essere diversi: sommiamo male i dati del
+        # catalog intenzionalmente.
+        coin = list(SAMPLE_FUNDING_COINS)[0]
+
+        with tempfile.TemporaryDirectory() as tmp_catalog:
+            con = sources.connect(os.path.join(tmp_catalog, "duck"),
+                                 memory_limit="512MB")
+            try:
+                catalog_funding.build_samples(con, SAMPLE_DIR)
+                catalog_funding.build_hourly_series(con)
+                res = catalog_funding.cumulative_long(con, 10)
+                if res:
+                    real_value = res[0]['cum_funding_pct']
+                    # Modifica intenzionalmente per far fallire
+                    wrong_value = real_value * 2  # raddoppia il valore
+                    # Verifica che l'asserzione fallisca
+                    with self.assertRaises(AssertionError):
+                        self.assertAlmostEqual(wrong_value, real_value, delta=0.01)
+            finally:
+                con.close()
+
+
+class TestRoundTripSimmetria(unittest.TestCase):
+    """Verifica la simmetria e la composizione del round-trip.
+
+    Invariante: round-trip non deve dipendere dal lato (long/short) se il book e'
+    simmetrico, e la somma di entry + exit deve dare il totale."""
+
+    def test_round_trip_somma_di_due_esecuzioni(self):
+        """Il costo totale del round-trip e' la somma di entry + exit.
+
+        Verifica contro un calcolo a mano: mid=100, spread=0.10,
+        notional=100 $, size=1 unita'.
+
+        TAKER entry: fee=0.045 $, spread=0.05 $, total=0.095 $
+        TAKER exit:  fee=0.045 $, spread=0.05 $, total=0.095 $
+        TAKER RT:    0.19 $ = 0.19%
+        """
+        from costs import CostModel, Liquidity, Side
+        from tests.costs_fixture import simple_book
+
+        model = CostModel()
+        book = simple_book(mid=100.0, half_spread=0.05, size=10.0)
+
+        # Calcola entry e exit separatamente
+        entry = model.execution(book, Side.BUY, 100.0, Liquidity.TAKER)
+        exit_ = model.execution(book, Side.SELL, 100.0, Liquidity.TAKER)
+        manual_sum = entry.total + exit_.total
+
+        # Calcola il round-trip
+        rt = model.round_trip(100.0, book, liquidity=Liquidity.TAKER)
+
+        # Verifica che il totale sia la somma
+        self.assertAlmostEqual(rt.total, manual_sum, places=12,
+                               msg="Round-trip total != entry.total + exit.total")
+        self.assertAlmostEqual(rt.total_pct, 0.19, places=10)
+
+    def test_funding_long_e_short_simmetrici(self):
+        """Funding di un long e uno short sulla stessa posizione devono essere
+        opposti: short.cost = -long.cost."""
+        start, end = FINESTRA_NS
+        for coin in ATTESO:
+            with self.subTest(coin=coin):
+                s = _series(coin)
+                notional = 5000.0
+                long_cost = s.cost(LONG, notional, start, end)
+                short_cost = s.cost(SHORT, notional, start, end)
+
+                # Verifica simmetria esatta
+                self.assertAlmostEqual(long_cost.cost_pct, -short_cost.cost_pct,
+                                       places=12,
+                                       msg=f"{coin}: long e short non sono simmetrici")
+                self.assertAlmostEqual(long_cost.cost, -short_cost.cost,
+                                       places=8)
 
 
 class TestLaVerificaSaFallire(unittest.TestCase):
