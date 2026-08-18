@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 
 from . import (
     dataset,
+    derivedgaps,
     funding,
     gapwindows,
     intervals,
@@ -73,6 +74,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="canali a cadenza fissa, separati da virgola: solo su "
                         "questi il conteggio orario sotto la mediana viene "
                         "marcato low_volume. Stringa vuota = nessun canale.")
+    p.add_argument("--gap-p99-multiple", type=float,
+                   default=derivedgaps.DEFAULT_P99_MULTIPLE,
+                   help="un intervallo e' un buco se supera questo multiplo del "
+                        f"p99 della sua partizione (default "
+                        f"{derivedgaps.DEFAULT_P99_MULTIPLE:g})")
+    p.add_argument("--gap-min-s", type=float, default=derivedgaps.DEFAULT_MIN_GAP_S,
+                   help="pavimento assoluto della soglia di buco, in secondi "
+                        f"(default {derivedgaps.DEFAULT_MIN_GAP_S:g}): sotto, un "
+                        "silenzio non e' distinguibile da un canale tranquillo")
     p.add_argument("--now-ms", type=int, default=None,
                    help="istante di riferimento per chiudere le finestre di gap "
                         "ancora aperte (default: adesso). Serve ai test.")
@@ -168,15 +178,34 @@ def run(args: argparse.Namespace) -> dict:
     res["monotonicity_breaks"] = sanity.monotonicity_breaks(con, args.max_rows)
     res["interarrival"] = sanity.interarrival(con)
 
-    # Distribuzione degli intervalli al netto dei buchi registrati, e verifica
-    # della classificazione dichiarata. Va qui e non prima: legge `ts_ordered`,
-    # che e' appena stata materializzata da `build_ordered`.
-    n_merged = step("intervalli", lambda: intervals.build(con, windows))
+    # Buchi derivati dai dati. Vanno qui e non prima: leggono `ts_ordered`,
+    # appena materializzata da `build_ordered`. L'ordine dei tre passi non e'
+    # negoziabile — la soglia si calcola sugli intervalli grezzi, il rilevamento
+    # la usa, e l'esclusione statistica usa lo stesso criterio del rilevamento.
+    res["gap_thresholds"] = step(
+        "soglie di buco",
+        lambda: derivedgaps.build_thresholds(con, args.gap_p99_multiple,
+                                             args.gap_min_s),
+    )
+    n_derived = step("buchi derivati", lambda: derivedgaps.build(con))
+    res["derived_gaps"] = derivedgaps.stats(con)
+    res["gap_reconciliation"] = derivedgaps.reconcile(
+        derivedgaps.fetch(con), windows, args.max_rows
+    )
+    res["derived_gap_meta"] = {
+        "p99_multiple": args.gap_p99_multiple,
+        "min_gap_s": args.gap_min_s,
+        "min_intervals_for_p99": derivedgaps.MIN_INTERVALS_FOR_P99,
+        "n_derived": n_derived,
+    }
+
+    # Distribuzione degli intervalli al netto dei buchi DERIVATI, e verifica
+    # della classificazione dichiarata.
+    step("intervalli", lambda: intervals.build(con))
     res["intervals"] = intervals.stats(con)
     res["interval_class"] = intervals.classify(res["intervals"], fixed_rate)
     res["interval_meta"] = {
         "n_windows": len(windows),
-        "n_windows_merged": n_merged,
         "ratio_fixed_max": intervals.RATIO_FIXED_MAX,
         "ratio_regular_max": intervals.RATIO_REGULAR_MAX,
         "min_intervals": intervals.MIN_INTERVALS,
@@ -229,6 +258,8 @@ def run(args: argparse.Namespace) -> dict:
     n_hourly = metrics.write_parquet(con, parquet_path)
     intervals_path = os.path.join(out_dir, "intervals.parquet")
     intervals.write_parquet(con, intervals_path)
+    derived_path = os.path.join(out_dir, "derived_gaps.parquet")
+    derivedgaps.write_parquet(con, derived_path)
 
     total_rows = sum(r["n_rows"] for r in res["coverage"])
     first_ns = min((r["first_ts_ns"] for r in res["coverage"] if r["first_ts_ns"]),
@@ -248,6 +279,7 @@ def run(args: argparse.Namespace) -> dict:
         "hourly_rows": n_hourly,
         "parquet": parquet_path,
         "parquet_intervals": intervals_path,
+        "parquet_derived_gaps": derived_path,
     }
 
     lines = report.build(res)
@@ -260,6 +292,7 @@ def run(args: argparse.Namespace) -> dict:
     print(text)
     _log(f"parquet: {parquet_path} ({n_hourly} righe)")
     _log(f"parquet: {intervals_path} ({len(res['intervals'])} righe)")
+    _log(f"parquet: {derived_path} ({n_derived} buchi derivati)")
     con.close()
     return res
 

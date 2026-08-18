@@ -27,19 +27,22 @@ che la scala dei due canali entri nel numero.
 
 **Tre scelte di metodo.**
 
-*Gli intervalli dentro un buco registrato non contano.* Un'interruzione di
-4959 secondi produce un intervallo da 4959 secondi che non dice niente sulla
-cadenza del canale: dice che il collector era scollegato, cosa che il registro
-dei buchi gia' afferma. Lasciarlo dentro sposterebbe massimo e p99 verso una
-misura della qualita' della connessione invece che della cadenza dell'exchange.
-Le finestre si leggono col contratto gia' in vigore (`gapwindows`): TUTTI i
-record che dichiarano una durata, qualunque sia `event`.
+*Gli intervalli che SONO un buco non contano.* Un'interruzione di 4959 secondi
+produce un intervallo da 4959 secondi che non dice niente sulla cadenza del
+canale: dice che la raccolta era ferma. Lasciarlo dentro sposterebbe massimo e
+p99 verso una misura della qualita' della connessione invece che della cadenza
+dell'exchange.
 
-*Un intervallo si esclude se INTERSECA una finestra, non se e' contenuto.*
-L'intervallo a cavallo dell'inizio di un buco e' lungo quanto il buco piu' il
-pezzo prima: e' inquinato esattamente come quelli interni. Marcare piu' del
-necessario e' l'errore giusto da fare qui — la stessa scelta di
-`metrics.apply_gap_overlap`.
+*Quali intervalli siano buchi lo decidono i dati, non il registro.* Fino al
+2026-08-14 l'esclusione si basava sulle finestre di `_gaps.jsonl`, ed era buona
+solo quanto quel registro: le finestre venivano chiuse alla riconnessione della
+socket invece che alla ripresa dei dati, quindi un buco reale dell'8 agosto
+sopravviveva dentro le statistiche. Ora la sorgente e' `derivedgaps`: un
+intervallo e' escluso se supera la soglia della sua partizione, e il registro
+serve a spiegare la causa (`derivedgaps.reconcile`), non a stabilire
+l'esistenza. Conseguenza da tenere a mente leggendo la tabella: `max_s` non puo'
+superare la soglia per costruzione, ed e' il motivo per cui il report la stampa
+accanto.
 
 *Gli intervalli nulli restano dentro.* Due messaggi consegnati nello stesso
 nanosecondo locale sono un fatto: e' il modo in cui un canale a raffiche si
@@ -57,7 +60,6 @@ comporta l'exchange, e va deciso guardando i numeri, non da un `if`.
 from __future__ import annotations
 
 from .dataset import BACKFILL_CHANNELS, sql_str
-from .gapwindows import Window
 
 # Soglie della verifica di classificazione. Scelte a priori e asimmetriche, non
 # tarate sui dati: CLAUDE.md invariante 7. Il rapporto grezzo viene pubblicato
@@ -84,46 +86,11 @@ VERDICT_SKIPPED = "non_valutato"
 # Colonne innestate su `hourly` e quindi presenti nel parquet riassuntivo.
 HOURLY_COLUMNS = [
     "iv_n", "iv_median_s", "iv_p90_s", "iv_p99_s", "iv_max_s", "iv_mean_s",
-    "iv_ratio_p99_p50", "iv_n_excluded_gap", "iv_verdict",
+    "iv_ratio_p99_p50", "iv_n_excluded_gap", "iv_gap_threshold_s", "iv_verdict",
 ]
 
 
-def merge_windows(windows: list[Window]) -> list[tuple[int, int]]:
-    """Finestre di buco fuse in intervalli disgiunti, in nanosecondi.
-
-    Serve alla correttezza del join, non alla velocita': l'esclusione cerca
-    l'ultima finestra che inizia prima della fine dell'intervallo e guarda se
-    finisce dopo il suo inizio. Quel ragionamento vale solo se le finestre non
-    si sovrappongono — e nel registro reale si sovrappongono eccome, perche' un
-    record `resume` per canale sta dentro la finestra aggregata che lo ha
-    generato, e i record recuperati possono sforare.
-
-    Fondere anche le finestre che si toccano (`start <= end` corrente) tiene
-    l'invariante "fine della precedente <= inizio della successiva" stretta.
-    """
-    if not windows:
-        return []
-    spans = sorted((w.start_ms, w.end_ms) for w in windows)
-    merged: list[list[int]] = [[spans[0][0], spans[0][1]]]
-    for start, end in spans[1:]:
-        if start <= merged[-1][1]:
-            merged[-1][1] = max(merged[-1][1], end)
-        else:
-            merged.append([start, end])
-    return [(s * 1_000_000, e * 1_000_000) for s, e in merged]
-
-
-def materialize_gaps(con, windows: list[Window], table: str = "gap_merged") -> int:
-    con.execute(
-        f"CREATE OR REPLACE TABLE {table} (start_ns BIGINT, end_ns BIGINT)"
-    )
-    spans = merge_windows(windows)
-    if spans:
-        con.executemany(f"INSERT INTO {table} VALUES (?, ?)", spans)
-    return len(spans)
-
-
-def build(con, windows: list[Window]) -> int:
+def build(con) -> int:
     """Costruisce la tabella `intervals`, una riga per (canale, coin).
 
     Legge `ts_ordered` (gia' materializzata da `sanity.build_ordered`): quella
@@ -131,24 +98,22 @@ def build(con, windows: list[Window]) -> int:
     e ha gia' il `delta_ns` dal messaggio precedente. Ricalcolarlo qui
     significherebbe rileggere 2.6 GB di parquet per ottenere le stesse colonne.
 
-    Un intervallo va da `ts - delta` a `ts`. I `delta_ns` negativi (passi
-    indietro dell'orologio) non entrano nella distribuzione: sarebbero durate
-    negative. Vengono contati a parte, e `sanity.monotonicity` li elenca gia'
-    per esteso — qui interessa solo che non inquinino i percentili.
+    Legge anche `gap_thresholds` (`derivedgaps.build_thresholds`): un intervallo
+    e' un buco se supera la soglia della sua partizione. Un LEFT JOIN che non
+    trova soglia — i canali di backfill, che soglia non hanno — non esclude
+    niente: su un dump REST per riconnessione la distanza fra due righe e' il
+    funzionamento previsto, non un'interruzione.
+
+    L'ordine e' single-pass di proposito: la soglia si calcola sugli intervalli
+    grezzi, poi si escludono i buchi, poi si ricalcolano i percentili. Nessuna
+    iterazione fino a convergenza — sarebbe una taratura, e il p99 e' gia'
+    insensibile a un pugno di interruzioni.
+
+    I `delta_ns` negativi (passi indietro dell'orologio) non entrano nella
+    distribuzione: sarebbero durate negative. Vengono contati a parte, e
+    `sanity.monotonicity` li elenca gia' per esteso — qui interessa solo che non
+    inquinino i percentili.
     """
-    n_spans = materialize_gaps(con, windows)
-
-    # Con zero finestre il join non serve e non va fatto: un ASOF JOIN su una
-    # tabella vuota costerebbe comunque l'ordinamento di tutta `ts_ordered`.
-    if n_spans:
-        tagged = """
-            SELECT d.channel, d.coin, d.delta_ns,
-                   coalesce(w.end_ns > d.t_start, false) AS in_gap
-            FROM d ASOF LEFT JOIN gap_merged w ON d.t_end > w.start_ns
-        """
-    else:
-        tagged = "SELECT channel, coin, delta_ns, false AS in_gap FROM d"
-
     backfill = ", ".join(repr(c) for c in sorted(BACKFILL_CHANNELS))
     con.execute(
         f"""
@@ -157,20 +122,22 @@ def build(con, windows: list[Window]) -> int:
                CASE WHEN median_s > 0 THEN p99_s / median_s END AS ratio_p99_p50
         FROM (
             WITH d AS (
-                SELECT channel, coin, delta_ns,
-                       ts_local_ns - delta_ns AS t_start,
-                       ts_local_ns            AS t_end
-                FROM ts_ordered
-                WHERE delta_ns IS NOT NULL
+                SELECT o.channel, o.coin, o.delta_ns,
+                       t.threshold_ns, t.threshold_s
+                FROM ts_ordered o
+                LEFT JOIN gap_thresholds t USING (channel, coin)
+                WHERE o.delta_ns IS NOT NULL
             ),
-            tagged AS ({tagged}),
             usable AS (
-                SELECT channel, coin, delta_ns, in_gap,
-                       NOT in_gap AND delta_ns >= 0 AS ok
-                FROM tagged
+                SELECT channel, coin, delta_ns, threshold_s,
+                       coalesce(delta_ns >= threshold_ns, false) AS in_gap,
+                       coalesce(delta_ns < threshold_ns, true) AND delta_ns >= 0
+                                                                 AS ok
+                FROM d
             )
             SELECT channel, coin,
                    channel NOT IN ({backfill})                     AS is_stream,
+                   max(threshold_s)                                AS gap_threshold_s,
                    count(*)                                        AS n_pairs,
                    count(*) FILTER (WHERE in_gap)                  AS n_excluded_gap,
                    count(*) FILTER (WHERE NOT in_gap AND delta_ns < 0)
@@ -187,13 +154,15 @@ def build(con, windows: list[Window]) -> int:
         )
         """
     )
-    return n_spans
+    return con.execute(
+        "SELECT coalesce(sum(n_excluded_gap), 0) FROM intervals"
+    ).fetchone()[0]
 
 
 STAT_COLUMNS = [
     "channel", "coin", "is_stream", "n", "median_s", "p90_s", "p99_s", "max_s",
     "mean_s", "min_s", "ratio_p99_p50", "n_pairs", "n_excluded_gap",
-    "n_excluded_negative",
+    "n_excluded_negative", "gap_threshold_s",
 ]
 
 
@@ -287,6 +256,7 @@ def attach_to_hourly(con, classes: list[dict]) -> None:
                i.mean_s            AS iv_mean_s,
                i.ratio_p99_p50     AS iv_ratio_p99_p50,
                i.n_excluded_gap    AS iv_n_excluded_gap,
+               i.gap_threshold_s   AS iv_gap_threshold_s,
                c.verdict           AS iv_verdict
         FROM hourly h
         LEFT JOIN intervals i       USING (channel, coin)

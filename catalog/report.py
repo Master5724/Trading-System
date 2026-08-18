@@ -79,17 +79,21 @@ def _intervals_section(res: dict) -> list[str]:
     rows = res.get("intervals") or []
     classes = res.get("interval_class") or []
     meta = res.get("interval_meta") or {}
+    dmeta = res.get("derived_gap_meta") or {}
     L = [
         "",
-        "1.1 Regolarita' degli arrivi (intervalli al netto dei buchi registrati)",
+        "1.1 Regolarita' degli arrivi (intervalli al netto dei buchi OSSERVATI)",
         "",
-        "Un intervallo che interseca una finestra di _gaps.jsonl viene escluso:",
-        "misurerebbe la disconnessione, non la cadenza dell'exchange. Le finestre",
-        "sono le stesse del punto 2 (tutti i record con una durata, qualunque sia",
-        f"`event`), fuse in {_f(meta.get('n_windows_merged'))} intervalli disgiunti",
-        f"a partire da {_f(meta.get('n_windows'))} finestre.",
+        "Un intervallo che supera la soglia della sua partizione viene escluso:",
+        "misurerebbe l'interruzione della raccolta, non la cadenza dell'exchange.",
+        "La soglia si deriva dai dati — " + _f(dmeta.get("p99_multiple"), 1)
+        + " volte il p99 della partizione, con un",
+        f"minimo di {_f(dmeta.get('min_gap_s'), 1)} s — non dal registro dei buchi:"
+        " il registro dichiara, i dati",
+        "misurano. La riconciliazione fra le due fonti sta al punto 2.1.",
         "",
         "  indice = p99 / mediana. Vicino a 1 = metronomo; molto sopra 1 = raffiche.",
+        "  max_s non puo' superare soglia_s per costruzione: e' cio' che l'esclusione fa.",
         "",
     ]
     L += table(
@@ -98,12 +102,14 @@ def _intervals_section(res: dict) -> list[str]:
          ("median_s", "mediana_s", 4), ("p90_s", "p90_s", 4), ("p99_s", "p99_s", 4),
          ("max_s", "max_s", 3), ("mean_s", "media_s", 4),
          ("ratio_p99_p50", "indice", 2),
+         ("gap_threshold_s", "soglia_s", 1),
          ("n_excluded_gap", "esclusi_gap", 0),
          ("n_excluded_negative", "esclusi_neg", 0)],
     )
     L += [
         "",
-        "  esclusi_gap = intervalli scartati perche' dentro una disconnessione.",
+        "  esclusi_gap = intervalli scartati perche' sopra la soglia: sono uno per",
+        "                uno i buchi elencati al punto 2.1.",
         "  esclusi_neg = intervalli con durata negativa (passo indietro di",
         "                ts_local_ns). Devono essere 0; se non lo sono, li elenca",
         "                per esteso il punto 3.2.",
@@ -139,6 +145,102 @@ def _intervals_section(res: dict) -> list[str]:
             "  Non valutate (" + str(len(non_valutate)) + "): "
             + ", ".join(f"{c['channel']}/{c['coin']}" for c in non_valutate),
         ]
+    return L
+
+
+def _derived_gaps_section(res: dict) -> list[str]:
+    """2.1 — i buchi misurati sui dati, e cosa il registro ne sapeva.
+
+    Tre insiemi, stampati sempre tutti e tre anche quando sono vuoti: un insieme
+    che sparisce dal report perche' e' vuoto non si distingue da uno che nessuno
+    ha calcolato.
+    """
+    rec = res.get("gap_reconciliation") or {}
+    tot = rec.get("totali") or {}
+    dmeta = res.get("derived_gap_meta") or {}
+    L = [
+        "",
+        THIN,
+        "2.1 Buchi DERIVATI dai dati, e riconciliazione col registro",
+        THIN,
+        "",
+        "L'assenza di righe e' la misura; _gaps.jsonl e' una dichiarazione. Il",
+        "registro dice PERCHE' la raccolta si e' fermata, non SE si e' fermata:",
+        "fino al 14 agosto 2026 chiudeva le finestre alla riconnessione della",
+        "socket invece che alla ripresa dei dati, quindi ne sottostimava la durata.",
+        "",
+        f"  soglia = {_f(dmeta.get('p99_multiple'), 1)} x p99 della partizione, "
+        f"minimo {_f(dmeta.get('min_gap_s'), 1)} s "
+        f"(sotto {_f(dmeta.get('min_intervals_for_p99'))} intervalli: solo il minimo)",
+        f"  buchi osservati        : {_f(tot.get('n_derivati'))}",
+        f"  spiegati dal registro  : {_f(tot.get('n_spiegati'))}",
+        f"  NON spiegati           : {_f(tot.get('n_non_spiegati'))}   "
+        f"({_f(tot.get('durata_non_spiegata_s'), 1)} s complessivi)",
+        f"  finestre nel registro  : {_f(tot.get('n_finestre'))}, di cui senza "
+        f"alcuna assenza nei dati: {_f(tot.get('n_finestre_senza_assenza'))}",
+        f"  sottostima totale      : {_f(tot.get('sottostima_totale_s'), 1)} s "
+        f"(media per buco spiegato: {_f(tot.get('sottostima_media_s'), 1)} s)",
+        "",
+        "Soglia per partizione (p99 misurato, soglia applicata, buchi trovati):",
+    ]
+    L += table(
+        res.get("derived_gaps") or [],
+        [("channel", "canale", 0), ("coin", "coin", 0),
+         ("n_intervals", "intervalli", 0), ("p99_s", "p99_s", 3),
+         ("threshold_s", "soglia_s", 1), ("basis", "base", 0),
+         ("n_gaps", "buchi", 0), ("total_s", "tot_s", 1), ("max_s", "max_s", 1)],
+    )
+    L += [
+        "",
+        "(a) Buchi osservati e SPIEGATI da una finestra del registro.",
+        "    sottostima_s = quanto la finestra registrata e' piu' corta",
+        "    dell'assenza vera. E' la qualita' del registro, misurata.",
+        "",
+    ]
+    L += table(
+        rec.get("spiegati") or [],
+        [("channel", "canale", 0), ("coin", "coin", 0),
+         ("start_utc", "inizio UTC", 0), ("duration_s", "osservato_s", 1),
+         ("coperto_s", "coperto_s", 1), ("sottostima_s", "sottostima_s", 1),
+         ("copertura_pct", "copertura%", 1), ("event", "evento", 0),
+         ("reason", "motivo", 0)],
+    )
+    L += ["", "    Sottostima per giorno UTC (deve scendere dopo il 14 agosto):", ""]
+    L += table(
+        rec.get("sottostima_per_giorno") or [],
+        [("giorno", "giorno", 0), ("n", "buchi", 0),
+         ("sottostima_mediana_s", "mediana_s", 1),
+         ("sottostima_max_s", "max_s", 1),
+         ("sottostima_totale_s", "totale_s", 1)],
+    )
+    L += [
+        "",
+        "(b) Buchi osservati e NON spiegati da nessuna finestra: la raccolta si e'",
+        "    fermata e il registro non se ne e' accorto. Sono quelli che",
+        "    l'esclusione basata sul registro lasciava dentro le statistiche.",
+        "    Stessi estremi su piu' coin = interruzione della raccolta; una sola",
+        "    coin = puo' essere mercato fermo, e il catalogo non lo decide.",
+        "",
+    ]
+    L += table(
+        rec.get("non_spiegati") or [],
+        [("channel", "canale", 0), ("coin", "coin", 0),
+         ("start_utc", "inizio UTC", 0), ("end_utc", "fine UTC", 0),
+         ("duration_s", "durata_s", 1)],
+    )
+    L += [
+        "",
+        "(c) Finestre del registro che NON corrispondono a un'assenza nei dati.",
+        "    Una finestra piu' corta della soglia di rilevamento e' invisibile per",
+        "    costruzione e non e' un errore del registro; una lunga lo e'.",
+        "",
+    ]
+    L += table(
+        rec.get("finestre_senza_assenza") or [],
+        [("start_utc", "inizio UTC", 0), ("duration_s", "durata_s", 1),
+         ("event", "evento", 0), ("origin", "origine", 0),
+         ("still_open", "aperta", 0), ("reason", "motivo", 0)],
+    )
     return L
 
 
@@ -232,7 +334,9 @@ def build(res: dict) -> list[str]:
     L += [
         "",
         "Le due marcature sono separate e non vanno fuse:",
-        "  gap_overlap = l'ora interseca una disconnessione REGISTRATA dal collector",
+        "  gap_overlap = l'ora interseca una disconnessione REGISTRATA dal collector.",
+        "                Resta alimentata dal registro, quindi eredita i limiti del",
+        "                registro: i buchi misurati sui dati sono al punto 2.1.",
         "  low_volume  = le righe dell'ora sono sotto il 90% della mediana oraria",
         "                di quella coppia canale/coin (mediana calcolata sulle ore",
         "                non-bordo e senza gap). Alzato SOLO sui canali a cadenza",
@@ -277,6 +381,8 @@ def build(res: dict) -> list[str]:
     if res["flagged_truncated"] > 0:
         L += [f"  ... e altre {_f(res['flagged_truncated'])} ore marcate "
               f"(tutte nel parquet)"]
+
+    L += _derived_gaps_section(res)
 
     # ------------------------------------------------------------------ 3
     L += section("3. CONTROLLI DI SANITA'")
