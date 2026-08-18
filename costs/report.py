@@ -133,16 +133,22 @@ def slippage_over_books(model: CostModel, books, notionals: list[float],
 
 
 def funding_window(series: FundingSeries, days: int) -> tuple[int, int] | None:
-    """Gli ultimi `days` giorni di regolamenti osservati, in nanosecondi.
+    """Gli ultimi `days` giorni di regolamenti DEFINITIVI, in nanosecondi.
 
-    Ancorata all'ULTIMO regolamento presente nella serie e non all'orologio: un
+    Ancorata all'ultimo regolamento presente nella serie e non all'orologio: un
     report che gira mentre il collector e' fermo da un'ora deve descrivere i
     dati che ha, non una finestra che finisce nel vuoto.
+
+    "Definitivo" e non "ultimo": il regolamento derivato dall'ora di
+    campionamento in corso e' provvisorio (vedi `costs.funding`), e ancorarci
+    la finestra faceva due danni insieme — il report cambiava numero a ogni
+    esecuzione, e la finestra scivolava di un'ora rispetto a quella del
+    catalogo, che l'ora in corso la scarta gia'. Era l'intera causa della
+    divergenza residua fra i due moduli.
     """
-    span = series.span
-    if span is None:
+    last = series.last_final
+    if last is None:
         return None
-    last = span[1]
     first = last - days * HOURS_PER_DAY + 1
     return first * NS_PER_HOUR, (last + 1) * NS_PER_HOUR
 
@@ -172,6 +178,7 @@ def funding_report(series: FundingSeries, rest: FundingSeries | None,
         "n_noti": long_cost.n_known,
         "n_mancanti": long_cost.n_missing,
         "n_inaffidabili": long_cost.n_unreliable,
+        "n_provvisori": long_cost.n_provisional,
         "completa": long_cost.complete,
         "long_pct": long_cost.cost_pct,
         "short_pct": short_cost.cost_pct,
@@ -236,7 +243,7 @@ def format_coin(coin: str, sizes: dict[float, dict], execution: dict,
             f"  funding su {funding['giorni']} giorni "
             f"({funding['n_noti']}/{funding['n_regolamenti']} regolamenti noti, "
             f"{funding['n_mancanti']} mancanti, {funding['n_inaffidabili']} "
-            f"in ore inaffidabili):",
+            f"in ore inaffidabili, {funding['n_provvisori']} provvisori):",
             f"      long   {funding['long_pct']:+.4f} %   "
             f"short  {funding['short_pct']:+.4f} %   "
             f"(annualizzato long {funding['long_annualizzato_pct']:+.1f} %)",

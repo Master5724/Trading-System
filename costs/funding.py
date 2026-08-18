@@ -27,6 +27,18 @@ viene contata a parte e `FundingCost.complete` diventa falso. Chi calcola un
 PnL su una finestra incompleta deve saperlo (CLAUDE.md invariante 6); chi non
 vuole nemmeno vedere il numero usa `strict=True` e riceve un'eccezione.
 
+**L'ultimo regolamento derivato dai campioni non e' un fatto: e' provvisorio.**
+`rates[H + 1]` e' l'ULTIMO campione dell'ora H. Finche' l'ora H e' in corso,
+quel campione non e' ancora l'ultimo, e il valore cambia sotto chi legge: due
+letture della stessa serie a un minuto di distanza danno due numeri diversi
+(misurato su BTC il 2026-08-18: -7,72e-07 contro -5,04e-07 nella stessa
+esecuzione). Un rate provvisorio ha lo stesso difetto di uno inaffidabile — il
+numero c'e' ma non e' quello giusto — e quindi non entra in nessuna somma: e'
+contato a parte in `n_provisional`. Senza questo, il report non e'
+riproducibile e diverge dal catalogo di un'ora di funding senza che nulla lo
+segnali. La serie REST non ha il problema: li' il timestamp e' il regolamento
+gia' avvenuto.
+
 **Cosa non e' modellato.** Il notional e' costante per tutta la detenzione: il
 funding di ogni ora si applica alla stessa dimensione. E' l'approssimazione
 standard, e sottostima leggermente il costo di una posizione in guadagno (il
@@ -91,6 +103,8 @@ class FundingCost:
     - `n_unreliable`: regolamenti la cui ora e' attraversata da un buco
       derivato dai dati. Un campione c'e', ma potrebbe essere vecchio di
       minuti rispetto all'istante di regolamento.
+    - `n_provisional`: regolamenti il cui rate deriva da un'ora di
+      campionamento non ancora conclusa. Il valore esiste ma cambiera'.
     - `n_known`: quelli effettivamente sommati.
     """
 
@@ -106,6 +120,7 @@ class FundingCost:
     rate_sum: float
     first_hour: int | None
     last_hour: int | None
+    n_provisional: int = 0
 
     @property
     def cost(self) -> float:
@@ -122,7 +137,8 @@ class FundingCost:
 
     @property
     def complete(self) -> bool:
-        return self.n_missing == 0 and self.n_unreliable == 0
+        return (self.n_missing == 0 and self.n_unreliable == 0
+                and self.n_provisional == 0)
 
     @property
     def coverage(self) -> float:
@@ -156,11 +172,18 @@ class FundingSeries:
 
     `unreliable` contiene le ore di regolamento il cui rate esiste ma proviene
     da una finestra di raccolta con un buco derivato dai dati.
+
+    `provisional` contiene le ore di regolamento il cui rate deriva da un'ora
+    di campionamento non ancora conclusa (vedi la docstring del modulo). E'
+    separato da `unreliable` perche' le due cose si curano in modo diverso: un
+    buco e' passato e restera' un buco, un rate provvisorio diventa definitivo
+    da solo appena l'ora finisce.
     """
 
     coin: str
     rates: dict[int, float]
     unreliable: frozenset[int] = frozenset()
+    provisional: frozenset[int] = frozenset()
 
     @classmethod
     def from_hourly_samples(cls, coin: str, samples: dict[int, float],
@@ -168,11 +191,17 @@ class FundingSeries:
                             ) -> FundingSeries:
         """Da `activeAssetCtx`: `samples[h]` = ultimo `ctx.funding` visto
         durante l'ora h. Il regolamento a cui si applica e' quello dell'ora h+1
-        (misurato, vedi docstring del modulo)."""
+        (misurato, vedi docstring del modulo).
+
+        L'ora di campionamento piu' recente e' l'unica che puo' essere ancora
+        in corso mentre si legge — il collector sta scrivendo dentro quella
+        stessa ora — quindi il regolamento che ne deriva nasce provvisorio.
+        """
         return cls(
             coin=coin,
             rates={h + 1: r for h, r in samples.items()},
             unreliable=frozenset(h + 1 for h in unreliable_sample_hours),
+            provisional=frozenset([max(samples) + 1]) if samples else frozenset(),
         )
 
     @classmethod
@@ -181,7 +210,11 @@ class FundingSeries:
                          ) -> FundingSeries:
         """Da `fundingHistory` (REST): il timestamp E' gia' l'istante del
         regolamento. E' la fonte di controllo, non la primaria: il backfill
-        gira solo alla riconnessione e copre 48 h di lookback."""
+        gira solo alla riconnessione e copre 48 h di lookback.
+
+        Nessun rate provvisorio: un regolamento che il REST riporta e' un
+        regolamento gia' avvenuto.
+        """
         return cls(coin=coin, rates=dict(rates), unreliable=frozenset(unreliable))
 
     def __len__(self) -> int:
@@ -193,9 +226,19 @@ class FundingSeries:
             return None
         return min(self.rates), max(self.rates)
 
+    @property
+    def last_final(self) -> int | None:
+        """L'ora di regolamento piu' recente il cui rate e' un fatto acquisito.
+
+        E' l'ancora giusta per una finestra: `span[1]` puo' essere un rate che
+        cambiera' fra un minuto, e ancorarcisi rende il numero irriproducibile.
+        """
+        final = [h for h in self.rates if h not in self.provisional]
+        return max(final) if final else None
+
     def rate(self, hour_idx: int) -> float | None:
         """None significa "non lo so", e non deve mai diventare 0.0 per strada."""
-        if hour_idx in self.unreliable:
+        if hour_idx in self.unreliable or hour_idx in self.provisional:
             return None
         return self.rates.get(hour_idx)
 
@@ -206,11 +249,14 @@ class FundingSeries:
             raise ValueError(f"notional negativo: {notional}")
         hours = settlement_hours(start_ns, end_ns)
         rate_sum = 0.0
-        n_known = n_missing = n_unreliable = 0
+        n_known = n_missing = n_unreliable = n_provisional = 0
         first = last = None
         for h in hours:
             if h in self.unreliable:
                 n_unreliable += 1
+                continue
+            if h in self.provisional:
+                n_provisional += 1
                 continue
             r = self.rates.get(h)
             if r is None:
@@ -226,12 +272,15 @@ class FundingSeries:
             n_settlements=len(hours), n_known=n_known,
             n_missing=n_missing, n_unreliable=n_unreliable,
             rate_sum=rate_sum, first_hour=first, last_hour=last,
+            n_provisional=n_provisional,
         )
         if strict and not cost.complete:
             raise IncompleteFunding(
-                f"{self.coin}: {cost.n_missing} regolamenti senza campione e "
-                f"{cost.n_unreliable} in ore inaffidabili su {cost.n_settlements} "
-                f"fra {hour_utc(hours.start)} e {hour_utc(hours.stop)} UTC"
+                f"{self.coin}: {cost.n_missing} regolamenti senza campione, "
+                f"{cost.n_unreliable} in ore inaffidabili e "
+                f"{cost.n_provisional} ancora provvisori su "
+                f"{cost.n_settlements} fra {hour_utc(hours.start)} e "
+                f"{hour_utc(hours.stop)} UTC"
             )
         return cost
 
@@ -245,12 +294,15 @@ class FundingSeries:
         hours = settlement_hours(start_ns, end_ns)
         total = 0.0
         weighted_notional = 0.0
-        n_known = n_missing = n_unreliable = 0
+        n_known = n_missing = n_unreliable = n_provisional = 0
         first = last = None
         for h in hours:
             n = notional_at.get(h)
             if h in self.unreliable:
                 n_unreliable += 1
+                continue
+            if h in self.provisional:
+                n_provisional += 1
                 continue
             r = self.rates.get(h)
             if r is None or n is None:
@@ -272,6 +324,7 @@ class FundingSeries:
             # formula per entrambe le varianti.
             rate_sum=(total / avg_notional) if avg_notional else 0.0,
             first_hour=first, last_hour=last,
+            n_provisional=n_provisional,
         )
 
     def disagreement(self, other: FundingSeries) -> dict:
@@ -281,7 +334,11 @@ class FundingSeries:
         `fundingHistory` divergono, il funding di ogni backtest e' sbagliato di
         quella quantita' e nessun'altra verifica se ne accorgerebbe.
         """
-        common = sorted(set(self.rates) & set(other.rates))
+        # I rate provvisori sono esclusi da entrambi i lati: confrontare un
+        # valore che cambiera' fra un minuto con un regolamento gia' avvenuto
+        # non misura un disaccordo fra le fonti, misura l'ora corrente.
+        common = sorted((set(self.rates) & set(other.rates))
+                        - self.provisional - other.provisional)
         diffs = [abs(self.rates[h] - other.rates[h]) for h in common]
         return {
             "n_common": len(common),
