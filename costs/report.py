@@ -83,10 +83,20 @@ def slippage_over_books(model: CostModel, books, notionals: list[float],
     """
     accs = {n: _Acc(n, [], [], []) for n in notionals}
     rt_taker_pct: list[float] = []
+    rt_taker_fee_pct: list[float] = []
+    rt_taker_slippage_pct: list[float] = []
     rt_maker_pct: list[float] = []
     spread_bps: list[float] = []
     n_books = 0
     rt_notional = notionals[0]
+    # Due commissioni taker sul notional NOMINALE: il termine costante
+    # dell'identita' che `costs.coherence` verifica. La fee vera si paga sul
+    # notional ESEGUITO, che differisce dal nominale proprio per lo slippage:
+    # lo scarto fra i due e' minuscolo ma non nullo, e va misurato invece che
+    # trascurato, perche' e' la tolleranza del controllo.
+    rt_fee_ref_pct = 100.0 * model.fees.round_trip_rate(Liquidity.TAKER)
+    rt_fee_scarto_max = 0.0
+    rt_identita_residuo_max = 0.0
 
     for book in books:
         n_books += 1
@@ -104,16 +114,31 @@ def slippage_over_books(model: CostModel, books, notionals: list[float],
                 acc.impact_bps.append(fill.impact_bps)
                 acc.slippage_bps.append(fill.slippage_bps)
         try:
-            rt_taker_pct.append(
-                model.round_trip(rt_notional, book,
-                                 liquidity=Liquidity.TAKER).total_pct
-            )
+            rt = model.round_trip(rt_notional, book, liquidity=Liquidity.TAKER)
         except InsufficientDepth:
             # Solo questa: il round-trip su uno snapshot troppo sottile viene
             # saltato e resta contato in `n_size_oltre_book`. Qualunque altra
             # eccezione e' un errore del modello e deve arrivare fino in cima,
             # non finire in una mediana.
             pass
+        else:
+            base = rt.notional_nominal
+            fee_pct = 100.0 * rt.fee / base
+            slip_pct = 100.0 * rt.slippage / base
+            rt_taker_pct.append(rt.total_pct)
+            rt_taker_fee_pct.append(fee_pct)
+            rt_taker_slippage_pct.append(slip_pct)
+            # Le due misure della stessa identita', a due livelli diversi:
+            # qui, snapshot per snapshot, dev'essere esatta (e' una somma di
+            # tre addendi ripresa dagli stessi addendi); in `coherence` la
+            # stessa cosa viene richiesta alle MEDIANE, dove esatta non puo'
+            # essere e la tolleranza e' `rt_fee_scarto_max`.
+            rt_identita_residuo_max = max(
+                rt_identita_residuo_max,
+                abs(rt.total - (rt.fee + rt.slippage)) / rt.total,
+            )
+            rt_fee_scarto_max = max(rt_fee_scarto_max,
+                                    abs(fee_pct - rt_fee_ref_pct))
         rt_maker_pct.append(
             model.round_trip(rt_notional, book,
                              liquidity=Liquidity.MAKER).total_pct
@@ -128,6 +153,15 @@ def slippage_over_books(model: CostModel, books, notionals: list[float],
         "round_trip_taker_pct_p90": quantile(rt_taker_pct, 0.90),
         "round_trip_maker_pct_p50": quantile(rt_maker_pct, 0.50),
         "round_trip_taker_n": len(rt_taker_pct),
+        # Le tre grandezze con cui il round-trip taker si ricompone. Sono
+        # mediane della STESSA passata e sugli STESSI snapshot del round-trip:
+        # confrontarle con la tabella per size, che aggrega acquisti e vendite
+        # separatamente, sarebbe confrontare due statistiche diverse.
+        "round_trip_taker_fee_pct_p50": quantile(rt_taker_fee_pct, 0.50),
+        "round_trip_taker_slippage_pct_p50": quantile(rt_taker_slippage_pct, 0.50),
+        "round_trip_taker_fee_riferimento_pct": rt_fee_ref_pct,
+        "round_trip_taker_fee_scarto_max_pct": rt_fee_scarto_max,
+        "round_trip_identita_residuo_max_rel": rt_identita_residuo_max,
     }
     return {n: a.summary() for n, a in accs.items()}, summary
 
@@ -189,6 +223,8 @@ def funding_report(series: FundingSeries, rest: FundingSeries | None,
             f"{lev:g}x": 100.0 * long_cost.on_equity(lev) for lev in leverages
         },
     }
+    out["prima_ora_regolamento"] = start_ns // NS_PER_HOUR
+    out["ultima_ora_regolamento"] = end_ns // NS_PER_HOUR - 1
     if rest is not None:
         rest_cost = rest.cost(LONG, notional, start_ns, end_ns)
         out["controllo_rest"] = {
@@ -198,6 +234,42 @@ def funding_report(series: FundingSeries, rest: FundingSeries | None,
             "differenza_pct": long_cost.cost_pct - rest_cost.cost_pct,
         }
     return out
+
+
+def format_summary(rows: dict[str, tuple[dict, dict, dict]],
+                   notionals: list[float]) -> list[str]:
+    """Le tabelle di confronto fra coin, generate dal codice.
+
+    Esistono per una ragione precisa e non estetica: finche' il report
+    stampava solo un blocco per coin, il confronto fra coin veniva ricopiato a
+    mano in un documento, e una riga ha preso i numeri di un'altra coin senza
+    che niente se ne accorgesse. Un numero trascritto e' un numero non
+    verificato. Questi qui arrivano dalle stesse strutture su cui girano i
+    controlli di `costs.coherence`.
+    """
+    L = ["", "=== riepilogo: le coin a confronto ===", "",
+         "  (generato dal codice sulle stesse strutture che i controlli di",
+         "   coerenza verificano; nessun numero e' ricopiato)", ""]
+    rt_n = next(iter(rows.values()))[1]["round_trip_notional_usd"] if rows else 0
+    L += [f"  round-trip su {rt_n:,.0f} $ (mediana sugli snapshot) e funding:",
+          f"      {'coin':<6} {'rt taker %':>11} {'rt maker %':>11} "
+          f"{'funding long %':>15} {'funding short %':>16} {'annualizz. %':>13}"]
+    for coin, (_, execution, funding) in rows.items():
+        fl = f"{funding['long_pct']:+15.4f}" if funding.get("disponibile") else f"{'n/d':>15}"
+        fs = f"{funding['short_pct']:+16.4f}" if funding.get("disponibile") else f"{'n/d':>16}"
+        an = (f"{funding['long_annualizzato_pct']:+13.1f}"
+              if funding.get("disponibile") else f"{'n/d':>13}")
+        L.append(f"      {coin:<6} {execution['round_trip_taker_pct_p50']:>11.4f} "
+                 f"{execution['round_trip_maker_pct_p50']:>11.4f} {fl} {fs} {an}")
+    L += ["", "  slippage mediano per size (bps sul mid, acquisti e vendite):",
+          "      " + f"{'coin':<6}" + "".join(f"{n:>12,.0f} $" for n in notionals)]
+    for coin, (sizes, _, _) in rows.items():
+        cells = []
+        for n in notionals:
+            v = sizes.get(n, {}).get("slippage_bps_p50")
+            cells.append(f"{v:>12.4f} " if v is not None else f"{'n/d':>12} ")
+        L.append(f"      {coin:<6}" + "".join(cells))
+    return L
 
 
 def format_coin(coin: str, sizes: dict[float, dict], execution: dict,

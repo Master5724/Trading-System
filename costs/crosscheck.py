@@ -153,13 +153,22 @@ def compare_window(costs_series: FundingSeries, catalog_row: dict,
 
 def run(con, data_dir: str, days: int = 10,
         coins: list[str] | None = None,
-        apply_gap_mask: bool = True) -> list[dict]:
+        apply_gap_mask: bool = True,
+        unreliable: dict[tuple[str, str], frozenset[int]] | None = None,
+        ) -> list[dict]:
     """Il confronto completo, coin per coin.
 
     `apply_gap_mask` esiste per i test sul campione registrato, dove i buchi
     derivati non sono quelli della produzione e la maschera non aggiungerebbe
     informazione. Sui dati veri va lasciato acceso: e' cio' che `costs/` fa
     davvero quando il report gira.
+
+    `unreliable` permette a chi ha gia' derivato i buchi (il report, che li
+    calcola anche per `l2Book`) di passarli qui invece di farli ricalcolare.
+    Non e' solo tempo risparmiato: se il report e il cross-check derivassero i
+    buchi in due momenti diversi, i loro due numeri di funding potrebbero
+    differire per la maschera invece che per un errore, e il controllo di
+    coerenza fra i due smetterebbe di significare qualcosa.
     """
     from . import sources
 
@@ -168,10 +177,11 @@ def run(con, data_dir: str, days: int = 10,
     catalog_rates = catalog_settlement_series(con, data_dir)
     catalog_rows = {r["coin"]: r for r in catalog_funding.cumulative_long(con, days)}
 
-    unreliable: dict[tuple[str, str], frozenset[int]] = {}
-    if apply_gap_mask:
-        unreliable = sources.unreliable_hours(
-            con, data_dir, [(FUNDING_CHANNEL, c) for c in coins])
+    if unreliable is None:
+        unreliable = {}
+        if apply_gap_mask:
+            unreliable = sources.unreliable_hours(
+                con, data_dir, [(FUNDING_CHANNEL, c) for c in coins])
 
     out = []
     for coin in coins:

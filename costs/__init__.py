@@ -26,6 +26,8 @@ I sottomoduli sono divisi per cosa costa:
                 escluse dai buchi derivati dai dati)
     validate    confronto del modello con le esecuzioni realmente avvenute
     report      aggregazione per il report a schermo
+    crosscheck  il funding di costs/ contro quello di catalog/
+    coherence   le identita' che il report deve rispettare al proprio interno
 """
 
 from __future__ import annotations

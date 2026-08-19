@@ -14,6 +14,18 @@ dentro un cgroup:
 
     systemd-run --user --scope -p MemoryMax=2G nice -n 19 ionice -c 3 \\
         .venv/bin/python -m costs --data-dir ... --out-dir ...
+
+**Un solo comando, non due.** Il cross-check del funding con `catalog/` gira
+dentro questa esecuzione e con la stessa maschera dei buchi. Quando erano due
+comandi separati, i due numeri di funding venivano da due istanti diversi: la
+finestra scivola di un'ora ogni ora, quindi differivano legittimamente di
+~0,001 punti, e quella differenza legittima rendeva indistinguibile una
+differenza illegittima. `python -m costs.crosscheck` resta per il confronto da
+solo, ma il report non ne dipende.
+
+**Codice di uscita.** 0 se il report e' internamente coerente, 2 se non lo e':
+un report che si contraddice non deve poter passare inosservato a uno script
+che guarda solo l'uscita. I controlli sono in `costs.coherence`.
 """
 
 from __future__ import annotations
@@ -27,6 +39,7 @@ from datetime import datetime, timezone
 
 from catalog import dataset
 
+from . import coherence, crosscheck
 from . import report as costs_report
 from . import sources, validate
 from .fees import HYPERLIQUID_PERP_BASE, FeeSchedule, Liquidity
@@ -69,6 +82,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         "i trade realmente eseguiti; vuoto = salta")
     p.add_argument("--validate-hour", default="*",
                    help="ora del giorno di validazione (default: tutte)")
+    p.add_argument("--no-crosscheck", action="store_true",
+                   help="salta il confronto del funding con catalog/. Il "
+                        "controllo di coerenza corrispondente diventa NON "
+                        "VERIFICATO e il comando esce comunque diverso da zero")
     p.add_argument("--memory-limit", default="1GB")
     p.add_argument("--threads", type=int, default=1)
     p.add_argument("--gap-p99-multiple", type=float, default=5.0)
@@ -119,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
         "coin": {},
     }
     lines: list[str] = []
+    memo: dict[str, tuple[dict, dict, dict]] = {}
 
     for coin in coins:
         t1 = time.time()
@@ -153,6 +171,7 @@ def main(argv: list[str] | None = None) -> int:
             "funding": funding,
             "trade": trade_stats,
         }
+        memo[coin] = (sizes, execution, funding)
         lines += costs_report.format_coin(coin, sizes, execution, funding,
                                           trade_stats)
         _log(f"{coin}: fatto in {time.time() - t1:.0f}s")
@@ -177,11 +196,42 @@ def main(argv: list[str] | None = None) -> int:
                 f"      size oltre i 10 livelli: {v['n_size_oltre_book']:,}",
             ]
 
+    # Il cross-check col catalogo gira DENTRO questa esecuzione e con la
+    # stessa maschera dei buchi. Lanciarlo come comando separato produceva due
+    # numeri di funding calcolati in due momenti diversi — e siccome la
+    # finestra scivola di un'ora ogni ora, i due numeri differivano
+    # legittimamente, il che rendeva impossibile distinguere quella differenza
+    # da un errore.
+    cross_rows: list[dict] = []
+    if not a.no_crosscheck:
+        _log("cross-check del funding con catalog/...")
+        cross_rows = crosscheck.run(con, a.data_dir, days=a.funding_days,
+                                    coins=coins, unreliable=unreliable)
+        out["crosscheck_funding"] = cross_rows
+        lines += crosscheck.format_report(cross_rows)
+    cross_by_coin = {r["coin"]: r for r in cross_rows}
+
+    checks: list[coherence.Check] = []
+    for coin in coins:
+        sizes, execution, funding = memo[coin]
+        checks += coherence.check_coin(coin, execution, sizes, funding,
+                                       cross_by_coin.get(coin))
+    out["coerenza"] = [c.to_dict() for c in checks]
+    out["coerente"] = coherence.all_ok(checks)
+
+    lines += costs_report.format_summary(memo, notionals)
+    lines += coherence.format_checks(checks)
+
     print("\n".join(lines))
     path = os.path.join(a.out_dir, "costs_report.json")
     with open(path, "w") as f:
         json.dump(out, f, indent=2, ensure_ascii=False)
     _log(f"riepilogo JSON in {path} ({time.time() - t0:.0f}s totali)")
+    if not out["coerente"]:
+        # Diverso da zero: un report che si contraddice non deve poter essere
+        # consumato da uno script che guarda solo il codice di uscita.
+        _log("COERENZA INTERNA FALLITA: i numeri del report si contraddicono")
+        return 2
     return 0
 
 
