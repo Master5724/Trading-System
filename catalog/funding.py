@@ -123,11 +123,21 @@ def cumulative_long(con, days: int) -> list[dict]:
     di ogni ora si applica alla stessa dimensione. E' l'approssimazione
     standard e sottostima leggermente il costo di una posizione in guadagno
     (il cui notional cresce). Il report la dichiara.
+
+    **`from_hour` e `to_hour` sono istanti di REGOLAMENTO, non di
+    campionamento.** L'ultimo campione osservato durante l'ora H e' il rate che
+    viene regolato all'inizio dell'ora H+1 (l'allineamento e' misurato, vedi
+    `costs.funding`), quindi una finestra che somma i campioni delle ore
+    [A, B] descrive i regolamenti delle ore [A+1, B+1]. Etichettarla con A e B
+    la faceva sembrare sfasata di un'ora rispetto alla stessa finestra
+    calcolata da `costs/`, che ragiona in ore di regolamento. Le ore sommate
+    sono esattamente le stesse di prima: cambia solo come vengono dichiarate.
     """
     hours = days * 24
     cols = ["coin", "hours_requested", "hours_observed", "hours_missing",
             "from_hour", "to_hour", "cum_funding_pct", "cum_funding_frac",
-            "worst_hour_pct", "best_hour_pct", "mark_px_first", "mark_px_last"]
+            "worst_hour_pct", "best_hour_pct", "mark_px_first", "mark_px_last",
+            "first_settlement_hour_idx", "last_settlement_hour_idx"]
     rows = con.execute(
         f"""
         WITH last_complete AS (
@@ -142,14 +152,19 @@ def cumulative_long(con, days: int) -> list[dict]:
                {hours}                                  AS hours_requested,
                count(*)                                 AS hours_observed,
                {hours} - count(*)                       AS hours_missing,
-               min(hour_utc)                            AS from_hour,
-               max(hour_utc)                            AS to_hour,
+               epoch_ms((min(hour_idx) + 1) * {MS_PER_HOUR}) AS from_hour,
+               epoch_ms((max(hour_idx) + 1) * {MS_PER_HOUR}) AS to_hour,
                sum(funding_last) * 100                  AS cum_pct,
                sum(funding_last)                        AS cum_frac,
                max(funding_last) * 100                  AS worst_hour_pct,
                min(funding_last) * 100                  AS best_hour_pct,
                arg_min(mark_px_last, hour_idx)          AS mark_first,
-               arg_max(mark_px_last, hour_idx)          AS mark_last
+               arg_max(mark_px_last, hour_idx)          AS mark_last,
+               -- Estremi NOMINALI della finestra, in ore di regolamento: non
+               -- dipendono da quali ore siano state osservate, e sono quelli
+               -- che il cross-check con `costs/` deve poter confrontare.
+               any_value(h_end) - {hours} + 2           AS first_settlement,
+               any_value(h_end) + 1                     AS last_settlement
         FROM win GROUP BY 1 ORDER BY 1
         """
     ).fetchall()
