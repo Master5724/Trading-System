@@ -58,7 +58,8 @@ def _snapshot(path: str) -> dict[str, str]:
     for root, _, files in os.walk(path):
         for f in sorted(files):
             p = os.path.join(root, f)
-            out[p] = hashlib.sha256(open(p, "rb").read()).hexdigest()
+            with open(p, "rb") as fh:
+                out[p] = hashlib.sha256(fh.read()).hexdigest()
     return out
 
 
@@ -283,7 +284,15 @@ class TestLaVerificaSaFallire(unittest.TestCase):
     def test_senza_esclusione_l_ora_bucata_entrerebbe_nel_conto(self):
         """Se le ore inaffidabili non fossero escluse, il funding risulterebbe
         completo e il numero sarebbe indistinguibile da uno calcolato su dati
-        sani."""
+        sani.
+
+        Tre ore di campioni (H0, H0+1, H0+2) danno tre regolamenti (H0+1, H0+2,
+        H0+3), di cui l'ultimo e' provvisorio perche' deriva dall'ora piu'
+        recente. La finestra si ferma quindi a H0+3 escluso: il provvisorio
+        renderebbe `complete` falso da solo, e maschererebbe proprio la cosa
+        che questo test deve mostrare — che senza l'esclusione delle ore
+        bucate il risultato sembra sano.
+        """
         from costs import LONG
         data_dir = os.path.join(self.tmp.name, "d2")
         rows = []
@@ -296,12 +305,17 @@ class TestLaVerificaSaFallire(unittest.TestCase):
         write_partition(data_dir, "activeAssetCtx", "TEST", rows)
         u = sources.unreliable_hours(self.con, data_dir,
                                      [("activeAssetCtx", "TEST")])
-        start, end = (H0 + 1) * NS_PER_HOUR, (H0 + 4) * NS_PER_HOUR
+        # H0+1 e H0+2: due regolamenti definitivi, il secondo dei quali deriva
+        # dall'ora bucata H0+1.
+        start, end = (H0 + 1) * NS_PER_HOUR, (H0 + 3) * NS_PER_HOUR
         con_esclusione = sources.funding_series(
             self.con, data_dir, "TEST",
             unreliable=u[("activeAssetCtx", "TEST")]).cost(LONG, 1000.0, start, end)
         senza = sources.funding_series(self.con, data_dir, "TEST").cost(
             LONG, 1000.0, start, end)
+        self.assertEqual(con_esclusione.n_provisional, 0)
+        self.assertEqual(senza.n_provisional, 0)
+        self.assertEqual(con_esclusione.n_unreliable, 1)
         self.assertFalse(con_esclusione.complete)
         self.assertTrue(senza.complete)          # <- il numero pulito e falso
         with self.assertRaises(AssertionError):

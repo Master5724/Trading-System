@@ -1,176 +1,295 @@
-# PR #12: Analisi delle tre discrepanze nel modello di costo
+# PR #12 — Modello di costo: verifica delle tre discrepanze e report sui dati reali
 
-**Data esecuzione:** 2026-08-18T16:57  
-**Report:** `/tmp/hl-reports-new/costs_report.json`
-
-## Riepilogo
-
-Verificate le tre discrepanze riportate sul branch task-2-costs. I numeri sono stati rigenerati eseguendo il codice attualmente committato sui dati mainnet. Due dei tre problemi **non esistono** nel codice attuale; il terzo è già stato corretto dalle modifiche recenti.
+**Esecuzione:** 2026-08-19 08:53 UTC
+**Dati:** `/home/ubuntu/hl-data/mainnet`, sola lettura, collector PID 1063457 vivo durante tutta l'esecuzione
+**Report JSON:** `/tmp/hl-reports-pr12/costs_report.json`
+**Test:** 270/270 verdi, tutti sulla fixture committata
 
 ---
 
-## Discrepanza 1: Round-trip conta una sola esecuzione
+## Come leggere questo documento
 
-**Problema riportato:**  
-L'output riporta "RT taker 0,0450%" e "RT maker 0,0150%", ma questi dovrebbero essere raddoppiati (0,0900% taker e 0,0300% maker) perché un round-trip è entry + exit.
+Due cose distinte, che la versione precedente di questo file confondeva:
 
-**Verifica:** ✅ **CORRETTO**
-
-Il nuovo report mostra:
-- BTC: `round_trip_taker_pct_p50: 0.0916%` (entry TAKER + exit TAKER)
-- BTC: `round_trip_maker_pct_p50: 0.03%` (entry MAKER + exit MAKER)
-
-**Analisi:**
-- TAKER: fee per 2 esecuzioni = 0.0045 × 2 = 0.009 (9 bps) + spread minore (~0.156 bps) = 0.0916% ✓
-- MAKER: fee per 2 esecuzioni = 0.0015 × 2 = 0.003 (3 bps) esatto ✓
-
-Il vecchio report probabilmente stampava solo le fee (0,045% e 0,0150%), non il costo totale del round-trip. Il label era fuorviante.
-
-**Test aggiunto:** `test_round_trip_somma_di_due_esecuzioni()` verifica che `rt.total == entry.total + exit.total` contro un calcolo scritto a mano nel test.
+- I **test** girano solo su `tests/fixtures/costs_sample/`, che è committata e
+  immutabile. Non toccano `/home/ubuntu/hl-data`, che un collector vivo sta
+  riscrivendo mentre i test girano. Sono deterministici: stesso risultato oggi,
+  fra un mese, su un'altra macchina.
+- Il **report** gira sui dati di produzione, quattro coin, dieci giorni. È lì
+  che stanno i numeri qui sotto. Non è riproducibile per costruzione — la
+  finestra si sposta ogni ora — e per questo nessun test ci si ancora.
 
 ---
 
-## Discrepanza 2: Funding contraddice il catalogo (fattore 3-4x)
+## Discrepanza 1 — Round-trip conta una sola esecuzione
 
-**Problema riportato:**
-```
-Catalog: BTC 0,1626%,  ETH 0,2264%,  SOL 0,2248%,  HYPE 0,2031%
-Costs:   BTC 0,042%,   ETH 0,051%,   SOL 0,067%,   HYPE 0,089%
-Divergenza: ~4x
-```
+**Esito: il codice era già corretto, il vecchio output aveva un'etichetta
+fuorviante.**
 
-**Verifica:** ✅ **DISCREPANZA NON ESISTE NEL NUOVO REPORT**
+Il round-trip include entry + exit. Su BTC, notional 100 $:
 
-Il nuovo report di costs mostra:
-```
-BTC:  0.1868%  (era 0,042%; ora è 4.4x più grande)
-ETH:  0.2242%  (era 0,051%; ora è 4.4x più grande)
-HYPE: 0.2474%  (era 0,089%; ora è 2.8x più grande)
-SOL:  0.1878%  (era 0,067%; ora è 2.8x più grande)
-```
+- taker: 4,5 bps × 2 esecuzioni = 9 bps, più lo spread attraversato due volte
+  (~0,156 bps) → **0,0916 %**
+- maker: 1,5 bps × 2 = 3 bps esatti → **0,0300 %**
 
-I nuovi numeri di costs sono **molto più vicini** al catalogo:
-- BTC: 0,1868% vs 0,1626% → divergenza solo 14.8%
-- ETH: 0,2242% vs 0,2264% → divergenza solo 0,97%
-- HYPE: 0,2474% vs 0,2031% → divergenza 21.8%
-- SOL: 0,1878% vs 0,2248% → divergenza 16.5%
+Il vecchio "RT taker 0,0450 %" era la fee di *una* esecuzione, stampata sotto
+un'etichetta che diceva round-trip.
 
-**Possibili cause della vecchia discrepanza:**
-1. I dati potrebbero provenire da una finestra temporale diversa (10 giorni diversi)
-2. Il codice era stato modificato fra l'esecuzione precedente e ora
-3. Errore nella reportistica precedente
-
-**Ordine di grandezza atteso:** Su Hyperliquid il base interest rate è 0,01% ogni 8 ore = 0,00125% all'ora. Su 240 ore (10 giorni) = 0,30% di solo interesse base. I nostri valori di ~0,18-0,24% sono coerenti (il funding include premio oltre l'interesse base, che può essere positivo o negativo).
-
-**Test aggiunto:** `test_funding_costs_e_catalog_coincidono()` confronta il funding calcolato da costs/ con quello da catalog/ sulla stessa finestra e sugli stessi dati (fixture). Il test passa: i due moduli producono lo stesso numero entro tolleranza.
+Il test permanente `test_round_trip_somma_di_due_esecuzioni` confronta
+`rt.total` con `entry.total + exit.total` calcolati separatamente, contro un
+valore scritto a mano (mid 100, mezzo spread 0,05, taker → 0,19 $ = 0,19 %).
 
 ---
 
-## Discrepanza 3: Long e short non simmetrici
+## Discrepanza 2 — Funding contraddice il catalogo (fattore ~4x)
 
-**Problema riportato:**  
-"long +0,042%, short -0,038%" su BTC, differenza del 10%. Ma il funding è un trasferimento, dovrebbe essere simmetrico: short.cost = -long.cost.
+**Esito: la discrepanza non esiste più. `costs/` e `catalog/` danno lo stesso
+double, bit per bit.**
 
-**Verifica:** ✅ **SIMMETRICI NEL NUOVO REPORT**
+Sulla fixture, con la stessa finestra e gli stessi dati:
 
-Il nuovo report mostra (tutte le coin):
+| Coin | costs/ | catalog/ | differenza |
+|------|--------|----------|-----------|
+| BTC  | 0,15284673999999984 % | 0,15284673999999984 % | 0,000e+00 |
+| HYPE | 0,20677241999999943 % | 0,20677241999999943 % | 0,000e+00 |
+
+Il test permanente `test_funding_costs_e_catalog_coincidono` blocca questa
+uguaglianza con una tolleranza di **1e-9 punti percentuali**. Non è un margine
+di comodo: i due moduli danno lo stesso bit, e 1e-9 lascia spazio solo a una
+diversa associatività nella somma di 240 addendi (~1e-17). Un disallineamento
+di **un'ora** vale ~6e-4 punti percentuali, seicentomila volte la soglia, e il
+meta-test `test_il_confronto_vede_un_ora_di_scarto` dimostra che quella
+perturbazione fa davvero fallire il confronto.
+
+La causa della vecchia divergenza non è ricostruibile dai dati attuali:
+finestre diverse e una versione precedente del codice. Non ho un modo onesto
+di dire quale delle due, e non lo invento.
+
+---
+
+## Discrepanza 3 — Long e short non simmetrici
+
+**Esito: simmetrici, e ora verificato in modo non tautologico.**
+
+Il test che c'era confrontava `long.cost` con `-short.cost`. Quei due numeri
+escono dalla **stessa riga di codice** moltiplicata per `Side.sign`:
+l'uguaglianza vale per costruzione, anche se il segno fosse invertito, anche se
+la somma dei rate fosse sbagliata, anche se metà dei regolamenti fossero andati
+persi. Era una tautologia travestita da verifica.
+
+La versione riscritta confronta **ciascun lato separatamente** con un valore
+calcolato fuori da `costs/` (la costante in `ATTESO`, ottenuta in SQL puro), e
+in più verifica che:
+
+- i due lati abbiano contato gli **stessi** regolamenti (`n_settlements`,
+  `n_known`, `n_missing`, `n_provisional`, `first_hour`, `last_hour`) — una
+  simmetria ottenuta scartando ore su un lato solo sarebbe simmetrica e falsa;
+- `long.cost + short.cost == 0.0` **esatto**, non approssimato: il funding è un
+  trasferimento, fra i due lati non si crea né si distrugge denaro.
+
+Aggiunto `test_simmetria_anche_con_rate_di_segno_misto`: sul campione il
+funding è sempre positivo, quindi la simmetria potrebbe reggere per un motivo
+sbagliato (un `abs()` da qualche parte). Con rate +0,02 % / −0,05 % / +0,01 %
+su 10.000 $ il long **incassa** 2 $ e lo short paga 2 $, valori scritti a mano
+nel test.
+
+---
+
+## Cosa è cambiato nei test, e perché
+
+I test fallivano (24 su 99) per una ragione sola: **il modello è migliorato e i
+test sono rimasti indietro.**
+
+`costs/funding.py` ha introdotto la nozione di rate **provvisorio**. L'ultimo
+regolamento derivabile dai campioni `activeAssetCtx` viene dall'ora più
+recente, che può essere ancora in corso mentre si legge: il suo "ultimo
+campione" non è ancora l'ultimo, e due letture a un minuto di distanza danno
+due numeri diversi. Quel rate non entra in nessuna somma.
+
+Le conseguenze, tutte corrette e tutte non recepite dai test:
+
+| Test | Perché falliva | Correzione |
+|------|----------------|-----------|
+| `TestDieciGiorniSuiDatiReali` (4 test) | `ATTESO` e `FINESTRA_NS` erano stati calcolati includendo il regolamento provvisorio → `n_known=239` invece di 240 | Costanti ricalcolate in SQL puro con la regola del provvisorio scritta esplicitamente nella query |
+| `TestAllineamento.test_traslazione_di_un_ora` | Con un solo campione, l'unico regolamento derivato è provvisorio e `rate()` restituisce `None` | Due campioni, così la traslazione si osserva su un'ora definitiva. Aggiunti tre test sul comportamento del provvisorio |
+| `test_allineamento_sbagliato_di_un_ora` | Sulla finestra vecchia la serie giusta e quella disallineata coincidevano per caso | Con la finestra corretta discriminano: 1,5285 vs 1,5358 (0,48 % di scarto) |
+| `test_senza_esclusione_l_ora_bucata_entrerebbe_nel_conto` | Il regolamento provvisorio rendeva `complete` falso da solo, mascherando proprio il fatto che il test doveva mostrare | Finestra spostata a `[H0+1, H0+3)`, che contiene due regolamenti definitivi |
+| `test_cento_dollari_non_hanno_impatto` (15 subtest) | Vedi sotto | Riscritto |
+
+### Il test di slippage asseriva un fatto di mercato falso
+
+Il test affermava che un ordine da 100 $ resta **sempre** dentro il primo
+livello, su tutte e quattro le coin. Sui dati registrati è falso. Su 320 coppie
+(snapshot, lato) della fixture succede **15 volte** che 100 $ debbano
+attraversare: 2 su BTC, 3 su ETH, 4 su SOL, 6 su HYPE. La produzione conferma:
+`impact_bps_max` per 100 $ è 0,93 (BTC), 1,50 (ETH), 2,37 (SOL), 2,94 (HYPE).
+
+Non descriveva il modello: descriveva una congettura sul mercato, e la
+congettura era sbagliata. Ora sono due test distinti:
+
+1. **`test_dentro_il_primo_livello_si_paga_mezzo_spread_e_basta`** — l'invariante
+   del modello. Il ramo lo decide la profondità del book, snapshot per
+   snapshot: se la size entra nel primo livello, impatto **esattamente** zero e
+   slippage **esattamente** il mezzo spread; se lo eccede, impatto > 0 e
+   slippage > mezzo spread. Il test verifica anche che **entrambi** i rami
+   siano esercitati (320 = 305 dentro + 15 oltre), altrimenti passerebbe
+   verificando metà dell'invariante senza che nessuno se ne accorga.
+2. **`test_cento_dollari_costano_pochi_bps_su_questo_mercato`** — il fatto di
+   mercato, separato. Massimi misurati sulla fixture: 1,556 bps di impatto,
+   1,622 bps di costo totale (entrambi su SOL). Soglie a 3 e 5 bps: arrotondate
+   sopra i massimi con margine dichiarato, per intercettare un cambio di regime
+   di liquidità, non per certificare decimali.
+
+Sistemato anche un `ResourceWarning` preesistente (file non chiuso in
+`_fingerprint`).
+
+---
+
+## Report sui dati reali — 4 coin, 10 giorni
+
+Comando eseguito (sola lettura, priorità minima, memoria limitata):
+
+```bash
+export XDG_RUNTIME_DIR=/run/user/1001
+export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1001/bus
+systemd-run --user --scope -p MemoryMax=2G nice -n 19 ionice -c 3 \
+  /home/ubuntu/hl-trading/.venv/bin/python -m costs \
+  --data-dir /home/ubuntu/hl-data/mainnet \
+  --out-dir /tmp/hl-reports-pr12 \
+  --funding-days 10 --memory-limit 1GB --threads 2
 ```
-BTC:  long_pct:  0.1868%,  short_pct: -0.1868%   (esatto opposto)
-ETH:  long_pct:  0.2242%,  short_pct: -0.2242%   (esatto opposto)
-HYPE: long_pct:  0.2474%,  short_pct: -0.2474%   (esatto opposto)
-SOL:  long_pct:  0.1878%,  short_pct: -0.1878%   (esatto opposto)
-```
 
-**Analisi:**  
-La simmetria è perfetta nel codice. Il vecchio report probabilmente era stato generato con dati diversi o con un'implementazione difettosa che è stata corretta.
+205 s totali, ~24.000 snapshot book per coin (uno al minuto).
 
-**Test aggiunto:** `test_funding_long_e_short_simmetrici()` verifica che su ogni coin il costo di uno short sia l'esatto opposto del costo di un long sulla stessa finestra.
+### Round-trip su 100 $ (mediana sugli snapshot)
+
+| Coin | Taker % | Maker % | Spread mediano (bps) |
+|------|---------|---------|---------------------|
+| BTC  | 0,0916  | 0,0300  | 0,156 |
+| ETH  | 0,0953  | 0,0300  | 0,530 |
+| HYPE | 0,0918  | 0,0300  | 0,180 |
+| SOL  | 0,0913  | 0,0300  | 0,133 |
+
+Il maker a 0,0300 % è un **limite inferiore**, non una stima: assume esecuzione
+certa e nessuna selezione avversa. Nessuna delle due cose è vera.
+
+### Funding cumulato su 10 giorni (notional 100 $)
+
+**Tutte e quattro le coin: 235/240 regolamenti noti, 0 mancanti, 5 in ore
+inaffidabili, 0 provvisori. `completa: false`.**
+
+| Coin | Long % | Short % | Annualizzato % |
+|------|--------|---------|----------------|
+| BTC  | +0,1834 | −0,1834 | +6,69 |
+| ETH  | +0,2136 | −0,2136 | +7,80 |
+| HYPE | +0,2449 | −0,2449 | +8,94 |
+| SOL  | +0,1830 | −0,1830 | +6,68 |
+
+**Questi numeri sottostimano il funding reale di 5 regolamenti su 240.** Le 5
+ore escluse cadono in finestre in cui il collector aveva un buco derivato dai
+dati: il rate esiste nel campione ma la raccolta di quell'ora non è affidabile,
+e per l'invariante 6 non viene sostituita con zero né inclusa. Il flag
+`completa: false` è l'unica cosa che distingue questo numero da uno calcolato
+su dieci giorni sani, ed è per questo che esiste.
+
+Costo sul capitale a leva (long, BTC): 1x +0,183 %, 2x +0,367 %, 5x +0,917 %.
+
+### Controllo incrociato con la serie REST `fundingHistory`
+
+| Coin | Ore in comune | Diff. max sul rate | Cumulato REST | Scarto (punti) |
+|------|---------------|--------------------|---------------|----------------|
+| BTC  | 405 | 0,000e+00 | +0,1892 % | −0,00584 |
+| ETH  | 405 | 0,000e+00 | +0,2173 % | −0,00368 |
+| HYPE | 405 | 0,000e+00 | +0,2499 % | −0,00500 |
+| SOL  | 405 | **2,239e-07** | +0,1848 % | −0,00180 |
+
+Lo scarto sul cumulato **non è un disaccordo fra le fonti**: sulle ore in
+comune i rate coincidono. È l'effetto delle 5 ore che `costs/` esclude come
+inaffidabili e che la serie REST invece copre (239 regolamenti noti contro
+235). Le due fonti dicono la stessa cosa sulle stesse ore; contano ore diverse.
+
+**SOL è l'eccezione da guardare.** La differenza massima sul rate è 2,239e-07
+invece di zero esatto come sulle altre tre. È piccola (0,0022 bps su un
+singolo regolamento) ma non è rumore di virgola mobile su un `double`: è
+troppo grande. Non l'ho spiegata. Va guardata prima che qualcuno ci costruisca
+sopra.
+
+### Slippage mediano per size (bps sul mid)
+
+| Coin | 100 $ | 500 $ | 2.000 $ | p99 a 2.000 $ | size oltre il book |
+|------|-------|-------|---------|---------------|--------------------|
+| BTC  | 0,0782 | 0,0782 | 0,0782 | 0,7526 | 4 |
+| ETH  | 0,2650 | 0,2651 | 0,2651 | 1,2673 | 0 |
+| HYPE | 0,0904 | 0,0907 | 0,0916 | 1,9549 | 5 |
+| SOL  | 0,0663 | 0,0664 | 0,0664 | 1,4412 | 12 |
+
+La mediana è piatta perché a queste size l'impatto mediano è zero: si paga il
+mezzo spread. La coda no — il p99 è da 10 a 20 volte la mediana. Su SOL 12
+snapshot su ~24.000 non hanno abbastanza profondità nei 10 livelli registrati
+per assorbire 2.000 $, e vengono dichiarati insufficienti invece di produrre un
+prezzo estrapolato.
 
 ---
 
-## Test aggiunti a `tests/test_costs_funding.py`
+## Assunzioni fatte
 
-### Classe `TestRoundTripSimmetria`
+1. **L'allineamento campione → regolamento è +1 ora.** L'ultimo `ctx.funding`
+   osservato durante l'ora H è il rate del regolamento a inizio ora H+1.
+   Misurato, non assunto: sulle 405 ore in comune con la serie REST la
+   differenza è 0 su BTC, ETH e HYPE (2,239e-07 su SOL).
+2. **Notional costante per tutta la detenzione.** Il funding di ogni ora si
+   applica alla stessa dimensione. Sottostima il costo di una posizione in
+   guadagno, lo sovrastima per una in perdita.
+3. **Un campione book al minuto** (`--sample-every-s 60`). Su una mediana non
+   sposta nulla; su un p99 potrebbe, perché gli allargamenti di spread sono
+   brevi e un campionamento rado ne perde una parte.
+4. **Fee al tier base** (maker 1,5 bps, taker 4,5 bps), nessuno sconto volume,
+   nessun rebate.
+5. **Il book registrato ha 10 livelli.** Oltre quelli il modello dichiara
+   insufficienza invece di estrapolare (invariante 5).
+6. **La fixture è rappresentativa della forma dei dati, non del mercato.** 40
+   snapshot per coin bastano a verificare che il modello legga book reali; non
+   bastano a dire nulla sulla liquidità.
 
-1. **`test_round_trip_somma_di_due_esecuzioni()`**  
-   Verifica che il costo totale del round-trip sia la somma di entry + exit contro un calcolo scritto a mano nel test.
-   
-   Setup: mid=100, spread=0.10, notional=100 $, size=1 unità (TAKER)
-   - Entry fee: 0.045 $ + spread 0.05 $ = 0.095 $
-   - Exit fee: 0.045 $ + spread 0.05 $ = 0.095 $
-   - Round-trip totale: 0.19 $ = 0.19%
+## Cosa potrebbe essere sbagliato
 
-2. **`test_funding_long_e_short_simmetrici()`**  
-   Verifica che per ogni coin il costo di uno short sia -1 × il costo di un long sulla stessa finestra di 10 giorni.
-
-### Classe `TestCostsCatalogCrossCheck`
-
-3. **`test_funding_costs_e_catalog_coincidono()`**  
-   Confronta il funding cumulato (10 giorni) calcolato da `costs/` e `catalog/` sugli stessi dati (fixture costs_sample). Tolleranza: max 0,1% di errore relativo.
-   
-   Il test passa: i due moduli concordano entro tolleranza.
-
-4. **`test_costs_catalog_mismatch_fallisce_con_incoerenza()`**  
-   Meta-test: verifica che il test precedente **sappia davvero fallire** quando i numeri sono incoerenti. Disabilita intenzionalmente il meccanismo di confronto (raddoppia un valore) e verifica che l'asserzione fallisca.
-
----
-
-## Risultati dell'esecuzione su dati mainnet (10 giorni attuali)
-
-### Round-trip su 100 $, mediana degli snapshot
-
-| Coin | Taker (%) | Maker (%) | Mezzo spread mediano (bps) |
-|------|-----------|-----------|---------------------------|
-| BTC  | 0.0916    | 0.03      | 0.0782                    |
-| ETH  | 0.0953    | 0.03      | 0.2651                    |
-| HYPE | 0.0918    | 0.03      | 0.0902                    |
-| SOL  | 0.0913    | 0.03      | 0.0663                    |
-
-### Funding cumulato, 10 giorni (notional 100 $)
-
-| Coin | Long (%)  | Short (%) | Annualizzato (%) |
-|------|-----------|-----------|------------------|
-| BTC  | +0.1868   | -0.1868   | +6.82            |
-| ETH  | +0.2242   | -0.2242   | +8.18            |
-| HYPE | +0.2474   | -0.2474   | +9.03            |
-| SOL  | +0.1878   | -0.1878   | +6.85            |
-
-### Slippage mediano per size
-
-| Coin | 100 $ (bps) | 500 $ (bps) | 2000 $ (bps) |
-|------|-------------|-------------|-------------|
-| BTC  | 0.0782     | 0.0786     | 0.0783     |
-| ETH  | 0.2652     | 0.2652     | 0.2653     |
-| HYPE | 0.0905     | 0.0909     | 0.0917     |
-| SOL  | 0.0664     | 0.0664     | 0.0665     |
-
----
-
-## Conclusioni
-
-1. ✅ **Round-trip:** Il codice è corretto. Il vecchio report aveva label fuorviante.
-
-2. ✅ **Funding:** Il vecchio report si riferiva a dati/finestre diverse o a un'implementazione precedente. Il codice attuale produce risultati coerenti fra costs/ e catalog/.
-
-3. ✅ **Simmetria long/short:** Perfetta nel codice attuale.
-
-Tutti e tre i test sono stati aggiunti al file `tests/test_costs_funding.py` e passano. Il test di cross-check fra costs e catalog rimane nel repo in modo permanente per impedire che le due implementazioni divergano in futuro.
+- **I 2,239e-07 su SOL non sono spiegati.** È l'unica cosa in questo report che
+  non torna. Finché non si sa da dove viene, non si può escludere che sia il
+  sintomo di qualcosa di più grande su una coin sola.
+- **Le 5 ore inaffidabili su 240 sono il 2 % della finestra.** Il funding vero
+  su questi dieci giorni è più alto di quello riportato, di una quantità che
+  non conosco. Se le ore escluse fossero sistematicamente quelle di alta
+  volatilità (disconnessioni e movimenti bruschi correlano), la sottostima
+  sarebbe distorta, non solo rumorosa. Non l'ho verificato.
+- **Il maker a 0,0300 % non è raggiungibile.** Un ordine limite che riposa sul
+  book viene eseguito quando il mercato gli va contro. Il costo vero del maker
+  sta fra 0,03 % e il taker, e questo modello non sa dove.
+- **Le soglie 3 e 5 bps nel test di slippage sono osservazioni, non teoremi.**
+  Sono tarate sopra i massimi misurati sulla fixture. Un cambio di regime le
+  farebbe scattare, ed è il loro scopo — ma il numero esatto non ha
+  giustificazione teorica.
+- **`p99` su ~24.000 snapshot** significa che la coda è descritta da ~240
+  osservazioni per coin. È poco per un p99 stabile.
+- **La causa della discrepanza originale sul funding (fattore 4x) resta
+  ignota.** Il codice attuale è coerente e i test lo bloccano, ma non ho
+  ricostruito cosa producesse quei numeri. Se fosse un bug ancora presente in
+  un percorso che non ho esercitato, questi test non lo vedrebbero.
 
 ---
 
 ## Comandi di verifica
 
 ```bash
-# Esegui tutti i test di funding
-source /home/ubuntu/hl-trading/.venv/bin/activate
-python -m unittest tests.test_costs_funding -v
+# Tutta la suite (270 test, sulla sola fixture)
+/home/ubuntu/hl-trading/.venv/bin/python -m unittest \
+  $(ls tests/test_*.py | sed 's|/|.|;s|\.py$||')
 
-# Esegui i nuovi test specifici
-python -m unittest tests.test_costs_funding.TestRoundTripSimmetria -v
-python -m unittest tests.test_costs_funding.TestCostsCatalogCrossCheck -v
+# Solo i test di costs (99)
+/home/ubuntu/hl-trading/.venv/bin/python -m unittest \
+  tests.test_costs_funding tests.test_costs_fees tests.test_costs_slippage \
+  tests.test_costs_sources tests.test_costs_leverage
 
-# Rigenerato il report
-python -m costs --data-dir /home/ubuntu/hl-data/mainnet --out-dir /tmp/hl-reports-final
+# Rigenerare la fixture (sola lettura sulla produzione)
+/home/ubuntu/hl-trading/.venv/bin/python tests/fixtures/make_costs_sample.py \
+  --data-dir /home/ubuntu/hl-data/mainnet
 ```
-
-**Report finale:** `/tmp/hl-reports-new/costs_report.json`

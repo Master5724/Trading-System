@@ -226,18 +226,70 @@ class TestSuiBookReali(unittest.TestCase):
                 self.assertTrue(all(len(b.asks) == 10 and len(b.bids) == 10
                                     for b in bs))
 
-    def test_cento_dollari_non_hanno_impatto(self):
-        """Su tutte e quattro le coin, su tutti gli snapshot: un ordine da
-        100 $ resta dentro il primo livello. Se un giorno questo test
-        fallisse, sarebbe una notizia sul mercato, non sul codice."""
+    def test_dentro_il_primo_livello_si_paga_mezzo_spread_e_basta(self):
+        """L'invariante che separa le due meta' del modello di slippage.
+
+        Un ordine che entra nel primo livello paga il mezzo spread ed **esatta-
+        mente** quello: impatto zero. Un ordine che lo eccede paga di piu', e la
+        differenza e' l'impatto. Non c'e' una terza possibilita', e nessuno dei
+        due rami puo' essere verificato senza l'altro.
+
+        La versione precedente di questo test affermava che 100 $ restano
+        sempre dentro il primo livello su tutte e quattro le coin. Sui dati
+        registrati e' falso: su 320 coppie (snapshot, lato) succede 15 volte
+        che 100 $ debbano attraversare — 2 su BTC, 3 su ETH, 4 su SOL, 6 su
+        HYPE. Il vecchio test non descriveva il modello, descriveva una
+        congettura sul mercato, e la congettura era sbagliata. Qui il ramo lo
+        decide la profondita' del book snapshot per snapshot.
+        """
+        dentro = oltre = 0
         for coin, bs in self.books.items():
             for b in bs:
-                with self.subTest(coin=coin, ts=b.ts_local_ns):
-                    for side in (Side.BUY, Side.SELL):
-                        f = b.walk(side, b.size_for_notional(100.0))
-                        self.assertEqual(f.impact_frac, 0.0)
-                        self.assertAlmostEqual(f.slippage_frac,
-                                               b.half_spread_frac, places=15)
+                for side in (Side.BUY, Side.SELL):
+                    size = b.size_for_notional(100.0)
+                    top = b.levels(side)[0]
+                    f = b.walk(side, size)
+                    with self.subTest(coin=coin, ts=b.ts_local_ns, side=side):
+                        self.assertTrue(f.sufficient)
+                        if size <= top.sz:
+                            dentro += 1
+                            self.assertEqual(f.impact_frac, 0.0)
+                            self.assertAlmostEqual(f.slippage_frac,
+                                                   b.half_spread_frac, places=15)
+                            self.assertAlmostEqual(f.avg_px, top.px, places=12)
+                        else:
+                            oltre += 1
+                            self.assertGreater(f.impact_frac, 0.0)
+                            self.assertGreater(f.slippage_frac, b.half_spread_frac)
+
+        # Un test che finisse per esercitare un ramo solo passerebbe senza
+        # verificare meta' dell'invariante, e nessuno se ne accorgerebbe.
+        self.assertGreater(dentro, 0, "nessuno snapshot dentro il primo livello")
+        self.assertGreater(oltre, 0, "nessuno snapshot oltre il primo livello")
+        self.assertEqual(dentro + oltre, 320)
+
+    def test_cento_dollari_costano_pochi_bps_su_questo_mercato(self):
+        """Il fatto di mercato, separato dall'invariante del modello.
+
+        Su queste quattro coin 100 $ sono un ordine piccolo: anche quando
+        attraversa il primo livello lo attraversa di poco. Sul campione i
+        massimi misurati sono 1,556 bps di impatto e 1,622 bps di costo totale,
+        entrambi su SOL; le altre tre coin stanno sotto 1 bps. Le soglie qui
+        sotto sono arrotondate al di sopra di quei massimi con un margine
+        dichiarato, non tarate per far passare il test: servono a intercettare
+        un cambio di regime di liquidita', non a certificare i decimali.
+
+        Se un giorno questo test fallisse sarebbe una notizia sul mercato, non
+        sul codice — ed e' per questo che sta separato da quello sopra, che
+        invece del mercato non parla.
+        """
+        for coin, bs in self.books.items():
+            for b in bs:
+                for side in (Side.BUY, Side.SELL):
+                    f = b.walk(side, b.size_for_notional(100.0))
+                    with self.subTest(coin=coin, ts=b.ts_local_ns, side=side):
+                        self.assertLess(f.impact_bps, 3.0)
+                        self.assertLess(f.slippage_bps, 5.0)
 
     def test_slippage_non_decresce_con_la_size(self):
         """Su ogni snapshot reale: 100, 500, 2.000, 20.000, 200.000 $.

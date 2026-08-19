@@ -16,6 +16,20 @@ sbagliasse di un'ora — l'errore piu' facile da fare e il piu' difficile da
 vedere — la somma resterebbe di ordine giusto e plausibile, ma smetterebbe di
 coincidere con la serie REST. `TestLaVerificaSaFallire` lo mostra
 esplicitamente sbagliando l'allineamento apposta.
+
+**Solo il campione, mai la produzione.** Ogni numero di questo file esce da
+`tests/fixtures/costs_sample/`, che e' committato e immutabile. Nessun test
+legge `/home/ubuntu/hl-data`: quella directory la scrive un collector vivo, e
+un test che la leggesse darebbe un risultato diverso a ogni esecuzione e
+nessuno su un'altra macchina. I numeri di produzione stanno nel report, non
+qui.
+
+**La finestra si ancora all'ultimo regolamento definitivo.** L'ultimo rate
+derivabile dai campioni e' provvisorio — l'ora da cui viene puo' essere ancora
+in corso, vedi `costs.funding` — e resta fuori da ogni somma. Ancorare la
+finestra a `span[1]` invece che a `last_final` produrrebbe un totale che cambia
+da una lettura all'altra: e' esattamente il difetto che rendeva il vecchio
+report irriproducibile.
 """
 
 from __future__ import annotations
@@ -38,10 +52,10 @@ from tests.costs_fixture import SAMPLE_DIR, SAMPLE_FUNDING_COINS, sample_availab
 # guardato, non aggiornato d'ufficio.
 ATTESO = {
     # coin: (somma dei rate sui 240 regolamenti, primo e ultimo indice orario)
-    "BTC": (0.001535795, 496058, 496297),
-    "HYPE": (0.0020704108, 496058, 496297),
+    "BTC": (0.0015284674, 496057, 496296),
+    "HYPE": (0.0020677242, 496057, 496296),
 }
-FINESTRA_NS = (1785808800000000000, 1786672800000000000)
+FINESTRA_NS = (1785805200000000000, 1786669200000000000)
 
 
 def _series(coin: str, unreliable=frozenset()) -> FundingSeries:
@@ -170,14 +184,37 @@ class TestAllineamento(unittest.TestCase):
     """Il campione osservato durante l'ora H regola all'inizio dell'ora H+1."""
 
     def test_traslazione_di_un_ora(self):
-        s = FundingSeries.from_hourly_samples("X", {10: 0.0003})
-        self.assertIsNone(s.rate(10))
-        self.assertEqual(s.rate(11), 0.0003)
+        """Due campioni, perche' l'ultimo regolamento derivato e' provvisorio e
+        non risponde: la traslazione va osservata su un'ora definitiva."""
+        s = FundingSeries.from_hourly_samples("X", {10: 0.0003, 11: 0.0007})
+        self.assertIsNone(s.rate(10))       # nessun campione dell'ora 9
+        self.assertEqual(s.rate(11), 0.0003)  # il campione dell'ora 10
+        self.assertIsNone(s.rate(12))       # deriverebbe dall'ora 11: provvisorio
+
+    def test_l_ultimo_regolamento_derivato_e_provvisorio(self):
+        """Il rate c'e' nella serie ma `rate()` non lo restituisce: l'ora 11
+        puo' essere ancora in corso, e il suo ultimo campione non e' ancora
+        l'ultimo. Tenerlo renderebbe la somma diversa a ogni lettura."""
+        s = FundingSeries.from_hourly_samples("X", {10: 0.0003, 11: 0.0007})
+        self.assertEqual(s.provisional, frozenset([12]))
+        self.assertEqual(s.rates[12], 0.0007)   # il valore e' li'...
+        self.assertIsNone(s.rate(12))           # ...ma non e' un fatto
+        self.assertEqual(s.last_final, 11)
+
+    def test_il_provvisorio_non_entra_nella_somma_ma_e_contato(self):
+        s = FundingSeries.from_hourly_samples("X", {10: 0.0003, 11: 0.0007})
+        c = s.cost(LONG, 1000.0, 11 * NS_PER_HOUR, 13 * NS_PER_HOUR)
+        self.assertEqual(c.n_settlements, 2)
+        self.assertEqual(c.n_known, 1)
+        self.assertEqual(c.n_provisional, 1)
+        self.assertFalse(c.complete)
+        self.assertAlmostEqual(c.cost, 0.30, places=12)   # solo l'ora 11
 
     def test_le_ore_inaffidabili_traslano_insieme(self):
-        s = FundingSeries.from_hourly_samples("X", {10: 0.0003},
+        s = FundingSeries.from_hourly_samples("X", {10: 0.0003, 11: 0.0007},
                                               unreliable_sample_hours={10})
         self.assertIsNone(s.rate(11))
+        self.assertEqual(s.unreliable, frozenset([11]))
 
 
 class TestDieciGiorniSuiDatiReali(unittest.TestCase):
@@ -189,8 +226,14 @@ class TestDieciGiorniSuiDatiReali(unittest.TestCase):
     """
 
     def test_finestra(self):
+        """La finestra finisce sull'ultimo regolamento DEFINITIVO, non
+        sull'ultimo rate presente: l'ora 496297 esiste nella serie ma e'
+        provvisoria, quindi la finestra si chiude prima."""
         s = _series("BTC")
         self.assertEqual(funding_window(s, 10), FINESTRA_NS)
+        self.assertEqual(s.last_final, 496296)
+        self.assertEqual(s.span, (496033, 496297))
+        self.assertEqual(s.provisional, frozenset([496297]))
 
     def test_long_e_short_sui_valori_attesi(self):
         for coin, (somma, primo, ultimo) in ATTESO.items():
@@ -202,6 +245,10 @@ class TestDieciGiorniSuiDatiReali(unittest.TestCase):
                 self.assertEqual(lungo.n_settlements, 240)
                 self.assertEqual(lungo.n_known, 240)
                 self.assertEqual(lungo.n_missing, 0)
+                # Zero provvisori: e' la finestra scelta da `funding_window`
+                # che li tiene fuori. Se ne comparisse uno, il totale non
+                # sarebbe piu' lo stesso a ogni esecuzione.
+                self.assertEqual(lungo.n_provisional, 0)
                 self.assertTrue(lungo.complete)
                 self.assertEqual((lungo.first_hour, lungo.last_hour),
                                  (primo, ultimo))
@@ -257,99 +304,89 @@ class TestCostsCatalogCrossCheck(unittest.TestCase):
     Questo test rimane nel repo in modo permanente per impedire che le due
     implementazioni divergano in futuro."""
 
-    def test_funding_costs_e_catalog_coincidono(self):
-        """Il funding cumulato su 10 giorni deve coincidere fra costs/ e catalog/.
+    # Tolleranza in punti percentuali. Sul campione i due moduli danno lo
+    # stesso double bit per bit, quindi 1e-9 non e' un margine di sicurezza
+    # comodo: e' solo spazio per una diversa associativita' nella somma di 240
+    # addendi (che vale ~1e-17). Un'ora di funding sbagliata vale ~6e-4 punti
+    # percentuali, seicentomila volte questa soglia: il test la vede.
+    TOLLERANZA_PCT = 1e-9
 
-        Usa gli stessi dati (activeAssetCtx) e la stessa finestra temporale.
-        La tolleranza e' stretta perche' qualunque discrepanza non spiega
-        l'esatto ordine di grandezza: il funding base e' ~0.30% su 10 giorni,
-        una differenza del 5% sarebbe enorme."""
-        if not sample_available():
-            self.skipTest("campione non disponibile")
+    def _confronta(self, coin: str, costs_pct: float, catalog_pct: float) -> None:
+        """Il confronto vero e proprio, in un punto solo perche' il meta-test
+        qui sotto possa esercitare ESATTAMENTE questo codice e non una sua
+        imitazione scritta a mano."""
+        self.assertAlmostEqual(
+            costs_pct, catalog_pct, delta=self.TOLLERANZA_PCT,
+            msg=(f"{coin}: costs={costs_pct:.12f}%, catalog={catalog_pct:.12f}% "
+                 f"(diff={abs(costs_pct - catalog_pct):.3e} punti percentuali)"))
 
-        import tempfile
+    @staticmethod
+    def _catalog_pct(coin: str, days: int) -> float:
         from catalog import funding as catalog_funding
         from costs import sources
-
-        for coin in SAMPLE_FUNDING_COINS:
-            with self.subTest(coin=coin):
-                # Leggi la serie da costs/
-                with tempfile.TemporaryDirectory() as tmp_costs:
-                    con_costs = sources.connect(
-                        os.path.join(tmp_costs, "duck"), memory_limit="512MB")
-                    try:
-                        costs_series = sources.funding_series(con_costs, SAMPLE_DIR,
-                                                              coin)
-                        # Stessa finestra di 10 giorni
-                        window = funding_window(costs_series, 10)
-                        if window is None:
-                            continue  # Saltalo se i dati non ci sono
-                        start_ns, end_ns = window
-                        costs_cost = costs_series.cost(LONG, 100.0, start_ns, end_ns)
-                    finally:
-                        con_costs.close()
-
-                # Leggi la serie da catalog/
-                with tempfile.TemporaryDirectory() as tmp_catalog:
-                    con_catalog = sources.connect(
-                        os.path.join(tmp_catalog, "duck"), memory_limit="512MB")
-                    try:
-                        # Prepara i dati del catalog
-                        catalog_funding.build_samples(con_catalog, SAMPLE_DIR)
-                        catalog_funding.build_hourly_series(con_catalog)
-                        catalog_res = catalog_funding.cumulative_long(con_catalog, 10)
-                        if not catalog_res:
-                            continue
-                        catalog_row = next((r for r in catalog_res if r['coin'] == coin),
-                                          None)
-                        if not catalog_row:
-                            continue
-                        catalog_pct = catalog_row['cum_funding_pct'] / 100.0  # converti in frazione
-                    finally:
-                        con_catalog.close()
-
-                # Confronta: entrambi i valori devono coincidere
-                # Tolleranza stretta: massimo 0.1% di errore relativo
-                tolerance = max(abs(costs_cost.cost_pct) * 0.01, 0.0001)
-                self.assertAlmostEqual(
-                    costs_cost.cost_pct, catalog_pct * 100,
-                    delta=tolerance,
-                    msg=(f"{coin}: costs={costs_cost.cost_pct:.6f}%, "
-                         f"catalog={catalog_pct*100:.6f}% (diff="
-                         f"{abs(costs_cost.cost_pct - catalog_pct*100):.6f}%)")
-                )
-
-    def test_costs_catalog_mismatch_fallisce_con_incoerenza(self):
-        """Verifica che il test precedente sappia davvero fallire se i numeri
-        sono incoerenti. Questo test è una meta-verifica: disabilita il meccanismo
-        che dovrebbe fare fallire il primo test e verifica che fallisca."""
-        if not sample_available():
-            self.skipTest("campione non disponibile")
-
-        import tempfile
-        from catalog import funding as catalog_funding
-        from costs import sources
-
-        # Usiamo dati che SAPPIAMO essere diversi: sommiamo male i dati del
-        # catalog intenzionalmente.
-        coin = list(SAMPLE_FUNDING_COINS)[0]
-
-        with tempfile.TemporaryDirectory() as tmp_catalog:
-            con = sources.connect(os.path.join(tmp_catalog, "duck"),
-                                 memory_limit="512MB")
+        with tempfile.TemporaryDirectory() as tmp:
+            con = sources.connect(os.path.join(tmp, "duck"), memory_limit="512MB")
             try:
                 catalog_funding.build_samples(con, SAMPLE_DIR)
                 catalog_funding.build_hourly_series(con)
-                res = catalog_funding.cumulative_long(con, 10)
-                if res:
-                    real_value = res[0]['cum_funding_pct']
-                    # Modifica intenzionalmente per far fallire
-                    wrong_value = real_value * 2  # raddoppia il valore
-                    # Verifica che l'asserzione fallisca
-                    with self.assertRaises(AssertionError):
-                        self.assertAlmostEqual(wrong_value, real_value, delta=0.01)
+                rows = catalog_funding.cumulative_long(con, days)
             finally:
                 con.close()
+        row = next((r for r in rows if r["coin"] == coin), None)
+        if row is None:
+            raise AssertionError(f"catalog non ha righe per {coin}: "
+                                 f"il campione o il catalogo sono cambiati")
+        return row["cum_funding_pct"]
+
+    def test_funding_costs_e_catalog_coincidono(self):
+        """Il funding cumulato su 10 giorni deve coincidere fra costs/ e catalog/.
+
+        Stessi dati (`activeAssetCtx` del campione), stessa finestra, due
+        implementazioni indipendenti. E' l'invariante 4 di CLAUDE.md applicata
+        al funding: se i due moduli divergono, uno dei due sta mentendo a
+        qualcuno, e non c'e' modo di sapere quale sia in uso quando conta.
+
+        Niente `skipTest` e niente `continue`: il campione e' committato. Se
+        manca o se il catalogo non produce righe, questo test deve fallire
+        rumorosamente, non passare in silenzio.
+        """
+        self.assertTrue(sample_available(), f"campione assente: {SAMPLE_DIR}")
+        for coin in SAMPLE_FUNDING_COINS:
+            with self.subTest(coin=coin):
+                s = _series(coin)
+                window = funding_window(s, 10)
+                self.assertIsNotNone(window, f"{coin}: finestra non calcolabile")
+                start_ns, end_ns = window
+                self.assertEqual((start_ns, end_ns), FINESTRA_NS)
+                costs_pct = s.cost(LONG, 100.0, start_ns, end_ns).cost_pct
+                self._confronta(coin, costs_pct, self._catalog_pct(coin, 10))
+
+    def test_il_confronto_vede_un_ora_di_scarto(self):
+        """Il meta-test. Non basta che il confronto sappia bocciare un valore
+        raddoppiato: quello lo boccerebbe qualunque soglia. La domanda vera e'
+        se `TOLLERANZA_PCT` sia stretta abbastanza da vedere l'errore che
+        abbiamo davvero rischiato di fare — un solo regolamento di scarto fra
+        i due moduli, cioe' il disallineamento di un'ora.
+
+        Qui il valore del catalogo viene perturbato di un'ora di funding reale
+        e si verifica che `_confronta` fallisca."""
+        self.assertTrue(sample_available(), f"campione assente: {SAMPLE_DIR}")
+        coin = SAMPLE_FUNDING_COINS[0]
+        s = _series(coin)
+        vero = self._catalog_pct(coin, 10)
+
+        # Un'ora di funding di questa coin, in punti percentuali su 100 $.
+        un_ora_pct = abs(s.rate(496_296)) * 100.0
+        self.assertGreater(un_ora_pct, 0.0)
+
+        for scarto, nome in ((un_ora_pct, "un'ora di funding"),
+                             (vero, "il valore raddoppiato")):
+            with self.subTest(perturbazione=nome):
+                with self.assertRaises(AssertionError):
+                    self._confronta(coin, vero + scarto, vero)
+
+        # E senza perturbazione non fallisce: la soglia non e' zero.
+        self._confronta(coin, vero, vero)
 
 
 class TestRoundTripSimmetria(unittest.TestCase):
@@ -388,22 +425,59 @@ class TestRoundTripSimmetria(unittest.TestCase):
         self.assertAlmostEqual(rt.total_pct, 0.19, places=10)
 
     def test_funding_long_e_short_simmetrici(self):
-        """Funding di un long e uno short sulla stessa posizione devono essere
-        opposti: short.cost = -long.cost."""
+        """Ogni lato contro un valore calcolato fuori da `Side`, non l'uno
+        contro l'altro.
+
+        Confrontare `long.cost` con `-short.cost` non verifica quasi nulla: i
+        due numeri escono dalla stessa riga di codice moltiplicata per
+        `Side.sign`, quindi l'uguaglianza vale anche se il segno e' invertito,
+        anche se la somma dei rate e' sbagliata, anche se meta' dei
+        regolamenti sono stati persi. E' vero per costruzione.
+
+        Qui ciascun lato e' confrontato con un valore indipendente: la costante
+        in `ATTESO`, ottenuta in SQL puro senza toccare `costs/`. E in piu' si
+        verifica che i due lati contino gli STESSI regolamenti — una simmetria
+        ottenuta scartando ore su un lato solo sarebbe simmetrica e falsa.
+        """
         start, end = FINESTRA_NS
-        for coin in ATTESO:
+        notional = 5000.0
+        for coin, (somma, _, _) in ATTESO.items():
             with self.subTest(coin=coin):
                 s = _series(coin)
-                notional = 5000.0
-                long_cost = s.cost(LONG, notional, start, end)
-                short_cost = s.cost(SHORT, notional, start, end)
+                lungo = s.cost(LONG, notional, start, end)
+                corto = s.cost(SHORT, notional, start, end)
 
-                # Verifica simmetria esatta
-                self.assertAlmostEqual(long_cost.cost_pct, -short_cost.cost_pct,
-                                       places=12,
-                                       msg=f"{coin}: long e short non sono simmetrici")
-                self.assertAlmostEqual(long_cost.cost, -short_cost.cost,
-                                       places=8)
+                # 1. Ogni lato contro il valore indipendente, separatamente.
+                atteso = somma * notional
+                self.assertAlmostEqual(lungo.cost, atteso, places=9)
+                self.assertAlmostEqual(corto.cost, -atteso, places=9)
+
+                # 2. I due lati hanno guardato gli stessi regolamenti.
+                self.assertEqual(
+                    (lungo.n_settlements, lungo.n_known, lungo.n_missing,
+                     lungo.n_provisional),
+                    (corto.n_settlements, corto.n_known, corto.n_missing,
+                     corto.n_provisional))
+                self.assertEqual((lungo.first_hour, lungo.last_hour),
+                                 (corto.first_hour, corto.last_hour))
+
+                # 3. Il funding e' un trasferimento: fra i due lati non si crea
+                #    ne' si distrugge denaro. Esatto, non approssimato.
+                self.assertEqual(lungo.cost + corto.cost, 0.0)
+
+    def test_simmetria_anche_con_rate_di_segno_misto(self):
+        """Sul campione il funding e' sempre positivo, quindi la simmetria
+        potrebbe reggere per un motivo sbagliato — per esempio un `abs()` da
+        qualche parte. Qui i rate cambiano segno e i valori attesi sono scritti
+        a mano: +0,02%, -0,05%, +0,01% su 10.000 $ fanno -2 $ per il long."""
+        s = FundingSeries.from_settlements("X", {1: 0.0002, 2: -0.0005,
+                                                 3: 0.0001})
+        start, end = NS_PER_HOUR, 4 * NS_PER_HOUR
+        lungo = s.cost(LONG, 10_000.0, start, end)
+        corto = s.cost(SHORT, 10_000.0, start, end)
+        self.assertAlmostEqual(lungo.cost, -2.0, places=10)   # incassa
+        self.assertAlmostEqual(corto.cost, 2.0, places=10)    # paga
+        self.assertEqual(lungo.cost + corto.cost, 0.0)
 
 
 class TestLaVerificaSaFallire(unittest.TestCase):
@@ -459,7 +533,10 @@ class TestLaVerificaSaFallire(unittest.TestCase):
             self.assertAlmostEqual(lungo, corto, places=8)
 
 
-# Come sono stati ottenuti i valori in ATTESO, senza passare da `costs/`:
+# Come sono stati ottenuti i valori in ATTESO, senza passare da `costs/`.
+# La riga `fin` e' la regola del provvisorio scritta in SQL: l'ultimo
+# regolamento derivabile dai campioni si scarta, perche' l'ora da cui viene
+# poteva essere ancora in corso quando il campione e' stato estratto.
 #
 #   WITH s AS (
 #     SELECT ts_local_ns // 3600000000000 AS h,
@@ -468,11 +545,13 @@ class TestLaVerificaSaFallire(unittest.TestCase):
 #     FROM read_parquet('tests/fixtures/costs_sample/activeAssetCtx/BTC/date=*/hour=*/*.parquet',
 #                       hive_partitioning=false)
 #     GROUP BY 1),
-#   st AS (SELECT h + 1 AS sh, f FROM s)
+#   st AS (SELECT h + 1 AS sh, f FROM s),
+#   fin AS (SELECT * FROM st WHERE sh < (SELECT max(sh) FROM st))
 #   SELECT count(*), min(sh), max(sh), sum(f)
-#   FROM st WHERE sh > (SELECT max(sh) - 240 FROM st);
+#   FROM fin WHERE sh > (SELECT max(sh) - 240 FROM fin);
 #
-#   -> 240 | 496058 | 496297 | 0.0015357949999999982
+#   BTC  -> 240 | 496057 | 496296 | 0.0015284673999999986
+#   HYPE -> 240 | 496057 | 496296 | 0.0020677241999999957
 
 if __name__ == "__main__":
     unittest.main()
