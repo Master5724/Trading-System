@@ -130,3 +130,38 @@ va scritto esplicitamente ("non applicabile, perché …"): non si omette.
 **Regole sui numeri.** Grezzi, mai trascritti a mano. Se un numero non torna,
 si dichiara invece di aggiustare la conclusione. Non si allargano le tolleranze
 per far passare un controllo.
+
+## Come si scrive un report
+
+I nove campi restano quelli. Cambia quanto spazio prende ciascuno: chi legge
+deve capire **in dieci secondi** se c'è qualcosa che non va, e scendere nei
+dettagli solo dopo.
+
+1. **Lunghezza proporzionale alla sorpresa.** Ciò che è andato come previsto sta
+   in una riga. Lo spazio si spende su deviazioni, dubbi e output grezzo.
+2. **Elenca le eccezioni, non le conferme.** Sui vincoli niente tabella riga per
+   riga: si scrive "tutti i vincoli rispettati" e poi **solo** quelli violati,
+   aggirati o interpretati, col motivo. Se sono tutti rispettati, il campo è una
+   riga sola.
+3. **Tetto di righe per i campi di routine.** GIT E PR, TEST, STATO DEL
+   COLLECTOR e VINCOLI: **tre righe ciascuno** quando non c'è nulla di anomalo.
+   Se ne servono di più è perché c'è una deviazione — va dichiarata in apertura
+   del campo.
+4. **Niente da incollare due volte.** Ogni informazione compare in un campo
+   solo. Ciò che sta in CAUSA RADICE non si ripete in COSA HAI CAMBIATO.
+5. **Niente output di tentativi già risolti.** Un errore capito e superato è una
+   riga: cos'era e come è stato escluso. L'output grezzo si incolla per i
+   risultati che contano e per ciò che non torna.
+6. **Niente ricapitolazione del prompt.** Chi legge il report è chi ha scritto
+   il compito.
+7. **Niente preamboli né chiusure di cortesia.** Si comincia dal risultato.
+   Nessun "lavoro completato", nessun "spero sia utile", nessun elenco di
+   ringraziamenti a sé stessi.
+8. **Cosa non va mai accorciato.** Queste regole non riducono mai: i numeri
+   grezzi e l'output non trascritto a mano; ciò che potrebbe essere sbagliato;
+   una causa radice che non spieghi l'**entità** dell'errore; un vincolo
+   violato; un dubbio che si è avuto e messo a tacere. Fra breve e completo su
+   uno di questi punti, si sceglie **completo**.
+9. **Verifica prima di inviare.** Rileggere e togliere ogni frase che non cambia
+   una decisione di chi legge. Un campo che si potrebbe cancellare senza perdere
+   informazione va cancellato e sostituito con "nulla da segnalare".
