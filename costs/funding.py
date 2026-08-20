@@ -6,6 +6,49 @@ entrambi i lati: un long con rate positivo paga, uno short con lo stesso rate
 incassa (costo negativo). Il segno si ottiene da `Side.sign`, mai da un `if`
 duplicato in giro per il codice.
 
+**Da dove viene il numero, e perche' ha un valore di default.** Hyperliquid
+calcola un tasso su 8 ore e ne regola un ottavo ogni ora:
+
+    F_8h = premium + clamp(0,0001 - premium, -0,0005, +0,0005)
+    rate_orario = F_8h / 8
+
+`0,0001` (1 bp su 8 h) e' la componente di interesse; `premium` misura quanto
+il perp scambia sopra o sotto l'oracolo. Il clamp produce tre regimi:
+
+- **premio fra -4 bp e +6 bp**: il clamp non satura, il premio si cancella e il
+  rate orario vale ESATTAMENTE 1,25e-05 (0,00125%), cioe' ~10,95% annualizzato
+  semplice (~11,6% composto);
+- **premio sotto -4 bp**: il clamp satura in basso, `F_8h = premium + 0,0005`,
+  il rate scende sotto il default e puo' diventare negativo (pagano gli short);
+- **premio sopra +6 bp**: il clamp satura in alto, `F_8h = premium - 0,0005`,
+  il rate supera il default, senza limite superiore.
+
+Quindi 1,25e-05 non e' ne' un pavimento ne' un tetto: e' un **default con
+uscita da entrambi i lati**. Un funding osservato stabilmente sotto quel valore
+non e' un bug di scala o di allineamento, e' un premio negativo.
+
+**Perche' possiamo affermarlo: verifica indipendente dal campo `funding`**
+(finestra 2026-08-09 22:00 -> 2026-08-19 22:00 UTC, 240 regolamenti per coin su
+BTC, ETH, HYPE, SOL; costo annualizzato osservato BTC 7,01%, ETH 7,58%,
+HYPE 10,38%, SOL 6,42% — tutti sotto il default). Le prove, nessuna delle quali
+passa dal campo `funding` stesso:
+
+- il mark price e' risultato **sotto** l'oracolo nel 98,3% delle ore su BTC e
+  nel 99,6% su ETH: il premio era davvero negativo;
+- la somma dei rate orari ricostruita da `activeAssetCtx` coincide con
+  l'endpoint REST `fundingHistory`: rapporto **1,0000**, differenza massima
+  esattamente **0** su 3 coin su 4 (unica eccezione SOL, 2,24e-07, lo 0,013%
+  della somma). Conferma insieme la scala oraria e l'allineamento H -> H+1;
+- il premio ricavato invertendo la formula correla **oltre 0,999** con il campo
+  `premium` pubblicato dall'exchange;
+- la distribuzione ha il "muro" atteso sul default: BTC 128 ore su 240
+  esattamente a 1,25e-05, che e' anche il suo massimo osservato. Su ETH
+  (max 2,67e-05) e HYPE (max 1,45e-04) sono state osservate ore **sopra** il
+  default, che quindi non e' un tetto assoluto.
+
+Il periodo e' di 10 giorni: dice che il modello legge bene, non che il premio
+restera' negativo.
+
 **Un valore per ora, e quale.** `ctx.funding` dentro `activeAssetCtx` viene
 ripubblicato circa una volta al secondo; sommare i campioni conterebbe lo
 stesso funding migliaia di volte. Il funding si regola una volta all'ora,

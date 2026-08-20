@@ -95,3 +95,38 @@ Un task è finito quando: i test passano, il modulo gira su dati reali
 registrati (non sintetici), e il riepilogo elenca **le assunzioni fatte e cosa
 potrebbe essere sbagliato**. Un riepilogo che dice solo "fatto, funziona" non
 è accettato.
+
+## REPORT FINALE (obbligatorio)
+
+**Quando si applica.** Sempre, alla fine di ogni task e di **ogni messaggio di
+correzione**, anche minimo — una riga cambiata, un numero rivisto, una
+riformulazione. Non va chiesto: è il formato di chiusura di default.
+
+Il report ha questi campi, **in questo ordine**. Se un campo non si applica,
+va scritto esplicitamente ("non applicabile, perché …"): non si omette.
+
+1. **GIT E PR** — link della PR, stato, branch, hash dei commit, elenco dei
+   file toccati con righe aggiunte e rimosse.
+2. **TEST** — quanti test esistono, quanti passano, quali sono stati aggiunti o
+   modificati. Per ogni test negativo: conferma di averlo fatto fallire di
+   proposito disabilitando la logica che dovrebbe coprire, e l'esito.
+3. **ESECUZIONE SUI DATI REALI** — comando esatto, durata, picco di memoria e
+   output **integrale incollato**: non riassunto, non ricopiato a mano, non
+   riformattato in una tabella scritta dall'assistente. Se il task non prevede
+   esecuzione, dirlo.
+4. **STATO DEL COLLECTOR** — PID prima e dopo, e conferma che il servizio non è
+   stato fermato né riavviato.
+5. **VINCOLI** — elenco dei vincoli del prompt, con conferma per ciascuno. Se
+   uno è stato violato, dirlo.
+6. **COSA HAI CAMBIATO** — file per file, col motivo.
+7. **ASSUNZIONI** — ogni assunzione fatta.
+8. **CAUSA RADICE** — se è stato corretto un difetto: la causa concreta e
+   dimostrata, e la verifica che quella causa spieghi l'**entità** dell'errore
+   osservato. Se non si riesce a ricostruirla, dichiararlo invece di proporre
+   una spiegazione parziale.
+9. **COSA POTREBBE ESSERE SBAGLIATO** — senza minimizzare. Se non c'è nulla,
+   dirlo e indicare quale controllo avrebbe rilevato un problema.
+
+**Regole sui numeri.** Grezzi, mai trascritti a mano. Se un numero non torna,
+si dichiara invece di aggiustare la conclusione. Non si allargano le tolleranze
+per far passare un controllo.

@@ -30,9 +30,54 @@ questo controllo automatico, prima o poi lo violerà.
 
 ## 2. Il funding: il costo che comanda a orizzonte lungo
 
-**Come funziona su Hyperliquid.** <cite index="66-1">La formula produce un tasso a 8 ore, ma il pagamento avviene ogni ora a un ottavo del tasso calcolato.</cite> <cite index="66-1">La componente di interesse è fissa allo 0,01% ogni 8 ore, cioè 0,00125% ogni ora — circa 11,6% APR strutturalmente pagato agli short.</cite> Sopra si somma il **premio**, che dipende da quanto il perp scambia sopra o sotto il prezzo spot dell'oracolo.
+**Come funziona su Hyperliquid.** <cite index="66-1">La formula produce un tasso a 8 ore, ma il pagamento avviene ogni ora a un ottavo del tasso calcolato.</cite> Il tasso a 8 ore si costruisce così:
+
+```
+F_8h = premio + clamp(0,01% − premio, −0,05%, +0,05%)
+tasso orario = F_8h / 8
+```
+
+<cite index="66-1">La componente di interesse è fissa allo 0,01% ogni 8 ore</cite>, cioè 0,00125% ogni ora. Il **premio** misura di quanto il perp scambia sopra o sotto il prezzo dello spot secondo l'oracolo.
 
 Se il perp sta sopra lo spot il funding è positivo e **i long pagano gli short**.
+
+**Lo 0,00125% l'ora è un valore di default, non un minimo garantito.** Il pezzo
+`clamp(x, −0,05%, +0,05%)` vuol dire "prendi x, ma non lasciarlo uscire dalla
+banda ±0,05%". Da lì escono tre comportamenti diversi:
+
+| premio (su 8 ore) | cosa fa il clamp | funding orario che ne esce |
+|---|---|---|
+| fra **−0,04% e +0,06%** | non satura: il premio si somma e si sottrae, e si cancella | **esattamente 0,00125%**, qualunque sia il premio dentro la banda |
+| sotto **−0,04%** | satura in basso: `F_8h = premio + 0,05%` | **meno** di 0,00125%, fino a diventare negativo (allora pagano gli short) |
+| sopra **+0,06%** | satura in alto: `F_8h = premio − 0,05%` | **più** di 0,00125%, senza limite superiore |
+
+Quindi 0,00125% non è un pavimento e non è nemmeno un tetto: è il valore che
+esce *finché il premio resta in mezzo*, e si esce da **entrambi** i lati.
+
+**Cosa mostrano i dati che stiamo raccogliendo** (10 giorni, 9→19 agosto 2026,
+240 ore di funding per coin su BTC, ETH, HYPE, SOL):
+
+- su **BTC, 128 ore su 240** hanno il funding esattamente a 0,00125% — ed è
+  anche il **massimo** osservato su quella coin. Nell'istogramma si vede un
+  "muro" netto: tante ore impilate sul valore di default, coda libera a
+  sinistra, niente a destra;
+- il muro c'è su tutte e quattro, di altezza diversa: ore esattamente al
+  default 128/240 su BTC, 107 su ETH, 186 su HYPE, 75 su SOL;
+- su **ETH e HYPE il default è stato superato**: massimo orario 0,00267% su ETH
+  e 0,0145% su HYPE, cioè quasi dodici volte il default. Non è un tetto;
+- nel complesso il costo di un long, annualizzato sul periodo, è stato
+  **BTC 7,0% · ETH 7,6% · HYPE 10,4% · SOL 6,4%**: tutti *sotto* l'11%, perché
+  il perp ha scambiato sotto lo spot quasi sempre (su BTC il mark price è stato
+  sotto l'oracolo nel **98,3%** delle ore, su ETH nel 99,6%).
+
+**Cosa aspettarti se apri un long.** Come situazione normale, circa **11%
+annualizzato** (0,00125% × 24 × 365 = 10,95%): è il default, e in una quota
+grande delle ore paghi esattamente quello — nel periodo misurato dal 31% delle
+ore su SOL al 78% su HYPE. Meno — fino a **incassare** funding
+invece di pagarlo — quando il premio è negativo, come nei dieci giorni che
+abbiamo misurato. Molto di più nei regimi fortemente rialzisti, quando quasi
+tutti sono long e il perp scambia sopra lo spot: lì il funding esce dalla banda
+verso l'alto e i numeri della tabella sotto (0,02% l'ora) diventano realistici.
 
 **Perché ti riguarda.** Confronta i costi di un long su 10 giorni, in percentuale
 del notional:
@@ -40,10 +85,11 @@ del notional:
 | voce | costo |
 |---|---|
 | commissioni round-trip, taker in entrata e uscita | ~0,09% |
-| funding 10 giorni al tasso base (240 ore × 0,00125%) | ~0,30% |
+| funding 10 giorni al valore di default (240 ore × 0,00125%) | ~0,30% |
+| funding 10 giorni davvero misurato su BTC (9→19 ago 2026, 240 ore) | ~0,19% |
 | funding 10 giorni a 0,02%/ora (mercato in trend) | ~4,8% |
 
-Il funding di base costa già **più del triplo delle commissioni**. In un mercato
+Il funding al valore di default costa già **più del triplo delle commissioni**. In un mercato
 caldo, cinquanta volte tanto. <cite index="71-1">Su un hold di settimane il funding supera regolarmente le commissioni su cui tutti si concentrano, e quasi nessuno lo misura finché non compare nel PnL.</cite>
 
 **Tre dettagli che cambiano i conti:**
