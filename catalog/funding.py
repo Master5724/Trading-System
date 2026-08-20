@@ -5,6 +5,47 @@ funding **positivo** significa che i long pagano i short. Quindi la somma dei
 rate su una finestra e' il **costo** sostenuto da una posizione long, in
 frazione del notional. Un numero positivo qui e' denaro uscito.
 
+**Cosa c'e' dentro `ctx.funding`.** Hyperliquid calcola un tasso su 8 ore e ne
+regola un ottavo ogni ora:
+
+    F_8h = premium + clamp(0,0001 - premium, -0,0005, +0,0005)
+    rate_orario = F_8h / 8
+
+`0,0001` (1 bp su 8 h) e' la componente di interesse; `premium` misura quanto
+il perp scambia sopra o sotto l'oracolo. Il clamp produce tre regimi, e vale la
+pena tenerli a mente leggendo la distribuzione che questo modulo produce:
+
+- **premio fra -4 bp e +6 bp**: il clamp non satura, il premio si cancella e il
+  rate orario vale ESATTAMENTE 1,25e-05 (0,00125%), ~10,95% annualizzato
+  semplice. E' un valore di **default**, non un pavimento e nemmeno un tetto;
+- **premio sotto -4 bp**: `F_8h = premium + 0,0005`, il rate scende sotto il
+  default e puo' diventare negativo;
+- **premio sopra +6 bp**: `F_8h = premium - 0,0005`, il rate supera il default,
+  senza limite superiore.
+
+Da qui la forma tipica dell'istogramma orario: un "muro" di ore esattamente sul
+default, coda libera a sinistra, e uscite sopra il default solo nei regimi
+fortemente rialzisti.
+
+**Verifica indipendente dal campo `funding`** (2026-08-09 22:00 -> 2026-08-19
+22:00 UTC, 240 regolamenti per coin su BTC, ETH, HYPE, SOL). Serve a non
+rifarla fra sei mesi quando il funding osservato sembrera' "troppo basso":
+
+- mark price **sotto** l'oracolo nel 98,3% delle ore su BTC e nel 99,6% su ETH:
+  il premio era realmente negativo, misurato senza toccare `ctx.funding`;
+- somma dei rate orari da `activeAssetCtx` uguale a quella dell'endpoint REST
+  `fundingHistory`: rapporto **1,0000**, differenza massima **0** su 3 coin su
+  4 (SOL 2,24e-07, lo 0,013% della somma);
+- premio invertito dalla formula contro il campo `premium` dichiarato:
+  correlazione **oltre 0,999**;
+- distribuzione: BTC 128 ore su 240 esattamente al default, che e' anche il suo
+  massimo osservato; ETH (max 2,67e-05) e HYPE (max 1,45e-04) hanno superato il
+  default, che quindi non e' un tetto assoluto.
+
+Conclusione: un costo di funding sotto l'11% annualizzato non e' un errore di
+scala di questo modulo, e' un premio negativo. Il periodo osservato e' pero'
+solo di 10 giorni.
+
 Il punto delicato non e' la somma, e' cosa si somma. `ctx.funding` viene
 ripubblicato circa una volta al secondo: sommare tutti i campioni conterebbe
 lo stesso funding migliaia di volte. Il funding su Hyperliquid si regola una
