@@ -120,16 +120,24 @@ class TestStrategiaCasuale(unittest.TestCase):
     spread, e la tentazione successiva sarebbe di correggere il motore.
     """
 
+    SEED_MERCATO = 3
+    SEED_STRATEGIA = 11
+
     def test_pnl_vale_meno_il_conto_entro_tre_sigma(self) -> None:
-        m = fx.market(n_bars=400, seed=3)
-        r = run(RandomTaker(m.coin, notional=NOTIONAL, seed=11, p_change=0.2), m)
+        m = fx.market(n_bars=400, seed=self.SEED_MERCATO)
+        r = run(RandomTaker(m.coin, notional=NOTIONAL, seed=self.SEED_STRATEGIA,
+                            p_change=0.2), m)
         d = decompose(r)
         s = sigma_of(r, m)
         atteso = -d["conto_atteso"]
         scarto = d["netto"] - atteso
-        print(f"\n[casuale] fill {r.n_fills}  netto {d['netto']!r}  "
-              f"atteso {atteso!r}  scarto {scarto!r}  sigma {s!r}  "
-              f"scarto/sigma {scarto / s:.3f}")
+        print(f"\n[casuale] seed mercato {self.SEED_MERCATO}, seed strategia "
+              f"{self.SEED_STRATEGIA}, barre {r.n_bars}, ordini {r.n_orders}, "
+              f"fill {r.n_fills}")
+        print(f"[casuale] netto {d['netto']!r}  atteso {atteso!r}  "
+              f"scarto {scarto!r} (netto peggiore dell'atteso del "
+              f"{100.0 * abs(scarto / atteso):.2f}% del conto) "
+              f"= {scarto / s:.3f} sigma (sigma {s!r})")
         print(f"[casuale] fee {d['fee']!r}  spread {d['spread']!r}  "
               f"impact {d['impact']!r}  lordo_al_mid {d['lordo_al_mid']!r}")
         # Nessuna soglia inventata sul numero di fill: su un mercato sano ogni
@@ -162,30 +170,48 @@ class TestEtichetteMescolate(unittest.TestCase):
     che lo shuffle azzeri il risultato non direbbe niente.
     """
 
-    def _labels(self, m: fx.Market) -> tuple[dict[int, float], dict[int, float]]:
-        base = run(Flat(), m)
-        px = marks(base, m)
-        vere = {k: (px[k + 1] - px[k]) for k in range(len(px) - 1)}
-        mescolate = dict(zip(vere.keys(), _shuffled(list(vere.values()), 7)))
-        return vere, mescolate
+    RIPETIZIONI = 20
+
+    def _labels(self, m: fx.Market) -> dict[int, float]:
+        """Etichetta della barra k: il rendimento della barra SUCCESSIVA."""
+        px = marks(run(Flat(), m), m)
+        return {k: (px[k + 1] - px[k]) for k in range(len(px) - 1)}
+
+    def _t_di(self, m: fx.Market, labels: dict[int, float]) -> tuple[float, dict]:
+        """Il t del PnL lordo: quante deviazioni standard sopra lo zero."""
+        r = run(LabelFollower(m.coin, labels, notional=NOTIONAL), m)
+        d = decompose(r)
+        return d["lordo_al_mid"] / sigma_of(r, m), d
 
     def test_lo_shuffle_azzera_il_vantaggio(self) -> None:
+        """Una permutazione sola non basta: con `t` distribuito attorno a zero,
+        un singolo campione sotto la soglia potrebbe essere fortuna. Se ne
+        fanno `RIPETIZIONI` e si guarda il peggiore."""
         m = fx.market(n_bars=400, seed=5)
-        vere, mescolate = self._labels(m)
-        r_vere = run(LabelFollower(m.coin, vere, notional=NOTIONAL), m)
-        r_mesc = run(LabelFollower(m.coin, mescolate, notional=NOTIONAL), m)
-        d_v, d_m = decompose(r_vere), decompose(r_mesc)
-        s_v, s_m = sigma_of(r_vere, m), sigma_of(r_mesc, m)
+        vere = self._labels(m)
+        t_vere, d_v = self._t_di(m, vere)
+        ts = []
+        for seed in range(1, self.RIPETIZIONI + 1):
+            mescolate = dict(zip(vere.keys(),
+                                 _shuffled(list(vere.values()), seed)))
+            t, _ = self._t_di(m, mescolate)
+            ts.append(t)
+        peggiore = max(abs(t) for t in ts)
+        media = sum(ts) / len(ts)
         print(f"\n[shuffle] etichette vere: lordo {d_v['lordo_al_mid']!r}  "
-              f"sigma {s_v!r}  t {d_v['lordo_al_mid'] / s_v:.2f}  "
-              f"netto {d_v['netto']!r}")
-        print(f"[shuffle] mescolate:      lordo {d_m['lordo_al_mid']!r}  "
-              f"sigma {s_m!r}  t {d_m['lordo_al_mid'] / s_m:.2f}  "
-              f"netto {d_m['netto']!r}")
-        self.assertGreater(d_v["lordo_al_mid"], 5.0 * s_v,
+              f"t {t_vere:.2f}  netto {d_v['netto']!r}")
+        print(f"[shuffle] {self.RIPETIZIONI} permutazioni: |t| max "
+              f"{peggiore:.2f}, media t {media:+.3f} (attesa 0 +/- "
+              f"{1 / self.RIPETIZIONI ** 0.5:.3f}), tutti i t "
+              f"{[round(t, 2) for t in ts]}")
+        self.assertGreater(t_vere, 5.0,
                            "il motore non rappresenta nemmeno un edge finto")
-        self.assertLess(abs(d_m["lordo_al_mid"]), 3.0 * s_m,
-                        "mescolando le etichette resta un vantaggio")
+        # Niente soglia assoluta inventata sul t mescolato: si chiede che
+        # l'edge vero sia molto piu' grande del piu' grande dei falsi, e che
+        # la media dei falsi stia nell'errore standard di N campioni.
+        self.assertGreater(t_vere, 3.0 * peggiore,
+                           "mescolando le etichette resta un vantaggio")
+        self.assertLess(abs(media), 3.0 / self.RIPETIZIONI ** 0.5)
 
 
 class TestLookAhead(unittest.TestCase):
@@ -195,8 +221,8 @@ class TestLookAhead(unittest.TestCase):
         m = fx.market(n_bars=10, seed=2)
         with self.assertRaises(LookAheadError) as ctx:
             run(PeeksAhead(m.coin, offset_ns=0), m)
-        print(f"\n[look-ahead] offset 0 ns -> {type(ctx.exception).__name__}: "
-              f"{str(ctx.exception)[:80]}")
+        print(f"\n[look-ahead] offset 0 ns -> {type(ctx.exception).__name__}\n"
+              f"[look-ahead] messaggio: {ctx.exception}")
 
     def test_accesso_a_ts_maggiore_solleva(self) -> None:
         m = fx.market(n_bars=10, seed=2)
@@ -250,12 +276,14 @@ class TestConservazione(unittest.TestCase):
         atteso = (r.initial_equity + j.total("realized_pnl", "fill")
                   - j.total("fee", "fill") - j.total("funding", "funding"))
         residuo = r.final_equity - atteso
-        print(f"\n[conservazione] finale {r.final_equity!r}  atteso {atteso!r}  "
-              f"residuo {residuo!r}")
-        print(f"[conservazione] realizzato {j.total('realized_pnl', 'fill')!r}  "
-              f"fee {j.total('fee', 'fill')!r}  "
-              f"funding {j.total('funding', 'funding')!r}  "
-              f"regolamenti {r.n_settlements}")
+        print(f"\n[conservazione] membro sinistro (equity finale)  "
+              f"{r.final_equity!r}")
+        print(f"[conservazione] membro destro  {r.initial_equity!r} "
+              f"+ {j.total('realized_pnl', 'fill')!r} "
+              f"- {j.total('fee', 'fill')!r} "
+              f"- {j.total('funding', 'funding')!r} = {atteso!r}")
+        print(f"[conservazione] differenza {residuo!r}  "
+              f"({r.n_fills} fill, {r.n_settlements} regolamenti)")
         self.assertGreater(r.n_settlements, 0)
         self.assertNotEqual(j.total("funding", "funding"), 0.0)
         self.assertEqual(round(residuo, 2), 0.0)

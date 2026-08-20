@@ -77,7 +77,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--max-book-age-s", type=float, default=30.0)
     p.add_argument("--out", default="")
     p.add_argument("--temp-dir", default="/tmp/backtest-duckdb")
-    p.add_argument("--memory-limit", default="1GB")
+    # 512MB e non 1GB: misurato, il picco del processo insegue il tetto dato a
+    # DuckDB (1331 MB con 1GB, 706 MB con 512MB) e il risultato non cambia di
+    # un bit — stesso digest nelle due esecuzioni. Su questa macchina il tetto
+    # lo condivide col collector, quindi il default e' il piu' basso dei due.
+    p.add_argument("--memory-limit", default="512MB")
     args = p.parse_args(argv)
 
     coins = tuple(sorted(c.strip() for c in args.coins.split(",") if c.strip()))
@@ -95,6 +99,10 @@ def main(argv: list[str] | None = None) -> int:
     con.execute("SET enable_progress_bar = false")
     funding, blocked, fstats = context(con, args.data_dir, coins)
     t_ctx = time.monotonic() - t0
+    # `ru_maxrss` e' un massimo storico, non l'occupazione istantanea: leggerlo
+    # a fine di ogni fase dice QUALE fase ha fatto il picco, che e' l'unica
+    # domanda utile quando il tetto di memoria e' condiviso col collector.
+    peak_ctx_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
 
     feed = ParquetFeed(con, args.data_dir, coins, args.start, args.end)
     strategy = build_strategy(args.strategy, coins[0], args.notional, args.seed)
@@ -176,7 +184,9 @@ def main(argv: list[str] | None = None) -> int:
     w("\n=== TEMPI E MEMORIA ===\n")
     w(f"contesto (gap+funding) {t_ctx:.2f}s\n")
     w(f"simulazione            {t_run:.2f}s\n")
-    w(f"picco RSS del processo {peak_mb:.1f} MB\n")
+    w(f"picco RSS dopo contesto {peak_ctx_mb:.1f} MB\n")
+    w(f"picco RSS a fine run    {peak_mb:.1f} MB\n")
+    w(f"memory_limit DuckDB     {args.memory_limit}\n")
     return 0
 
 

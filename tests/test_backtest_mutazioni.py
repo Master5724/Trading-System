@@ -155,16 +155,16 @@ class TestLoShuffleServe(unittest.TestCase):
         """
         m = fx.market(n_bars=400, seed=5)
         caso = adv.TestEtichetteMescolate("run")
-        with patch.object(adv, "_shuffled",
-                   lambda values, seed: list(values)):
-            _, finte = caso._labels(m)
-        r = run(LabelFollower(m.coin, finte, notional=NOTIONAL), m)
-        d, s = decompose(r), sigma_of(r, m)
-        t = d["lordo_al_mid"] / s
+        vere = caso._labels(m)
+        t_vere, _ = caso._t_di(m, vere)
+        with patch.object(adv, "_shuffled", lambda values, seed: list(values)):
+            finte = dict(zip(vere.keys(), adv._shuffled(list(vere.values()), 1)))
+        t_finto, d = caso._t_di(m, finte)
         print(f"\n[mut:shuffle] con permutazione identica: lordo "
-              f"{d['lordo_al_mid']!r}, sigma {s!r}, t {t:.2f} "
-              f"(la soglia del test e' 3)")
-        self.assertGreater(abs(t), 3.0)
+              f"{d['lordo_al_mid']!r}, t {t_finto:.2f} contro t delle etichette "
+              f"vere {t_vere:.2f}; il test chiede t_vere > 3 * |t_mescolato|, "
+              f"cioe' {t_vere:.2f} > {3.0 * abs(t_finto):.2f}")
+        self.assertLess(t_vere, 3.0 * abs(t_finto))
 
 
 class TestLaContabilitaServe(unittest.TestCase):

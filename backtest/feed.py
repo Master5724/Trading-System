@@ -8,12 +8,17 @@ directory dati (riuso di `catalog.dataset.connect` via `costs.sources.connect`).
 
 **Trade deduplicati per `tid` dalla funzione del catalogo.** Si importa
 `catalog.trades.dedup_sql`, non se ne scrive una seconda versione. La dedup
-gira sull'INTERA partizione della coin, non sulla sola finestra simulata, e
-non e' una svista: `dedup_sql` tiene la prima consegna osservata di ogni
-`tid`, quindi restringere lo scan alla finestra promuoverebbe a "prima
-consegna" una ritrasmissione la cui consegna originale sta fuori. Costa uno
-scan completo del canale `trades` per coin a ogni run — misurato nel report —
-e il costo e' il prezzo della risposta giusta.
+gira sui giorni della finestra **piu' un giorno per lato**, non sull'intera
+partizione della coin: `dedup_sql` tiene la prima consegna osservata di ogni
+`tid`, quindi il margine deve coprire la distanza fra una consegna e la sua
+ritrasmissione, altrimenti quest'ultima verrebbe promossa a "prima consegna".
+
+Il margine e' dimensionato su una misura, non su una sensazione: sull'intero
+mainnet raccolto la distanza massima fra due consegne dello stesso `tid` e'
+264 s, e un giorno per lato e' 327 volte tanto. Leggere l'intera partizione
+darebbe lo stesso risultato ma con un costo che cresce con lo storico invece
+che con la finestra, e su questa macchina un esaurimento di memoria ha gia'
+congelato il collector per 82 minuti.
 
 **Finestre inaffidabili dai buchi DERIVATI DAI DATI.** `costs.sources.
 unreliable_hours` riusa `catalog.derivedgaps`; il registro `_gaps.jsonl` non
@@ -58,11 +63,14 @@ _CHUNK = 20_000
 def dates_between(start_ns: int, end_ns: int) -> list[str]:
     """Le date UTC toccate dalla finestra, estremi compresi.
 
-    Si legge anche il giorno precedente e quello successivo: le directory
-    `date=`/`hour=` sono l'istante in cui il writer ha APERTO il batch, non
-    quello della riga (lo dice `catalog.dataset.read`), quindi una riga di
-    mezzanotte puo' stare nella cartella del giorno prima. Il filtro vero e'
-    sempre su `ts_local_ns`.
+    Si legge anche il giorno precedente e quello successivo, per due motivi che
+    chiedono lo stesso margine. Il primo: le directory `date=`/`hour=` sono
+    l'istante in cui il writer ha APERTO il batch, non quello della riga (lo
+    dice `catalog.dataset.read`), quindi una riga di mezzanotte puo' stare
+    nella cartella del giorno prima. Il secondo: la dedup per `tid` deve poter
+    vedere la consegna originale di una ritrasmissione che cade dentro la
+    finestra (vedi la docstring del modulo). Il filtro vero resta sempre su
+    `ts_local_ns`.
     """
     d0 = datetime.fromtimestamp(start_ns / 1e9, tz=timezone.utc).date()
     d1 = datetime.fromtimestamp(end_ns / 1e9, tz=timezone.utc).date()
@@ -143,7 +151,7 @@ class ParquetFeed:
         cur.execute(
             f"CREATE TABLE {table} AS "
             f"SELECT tid, side, px, sz, time_ms, ts_local_ns "
-            f"FROM {catalog_trades.dedup_sql(self.data_dir, coin)} "
+            f"FROM {catalog_trades.dedup_sql(self.data_dir, coin, self.dates)} "
             f"WHERE ts_local_ns >= ? AND ts_local_ns < ?",
             [self.start_ns, self.end_ns],
         )

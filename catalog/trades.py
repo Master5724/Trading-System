@@ -28,9 +28,27 @@ batch).
 diventano DOUBLE. Per i tick di Hyperliquid (5 cifre significative sul prezzo)
 la conversione e' esatta, ma resta un'assunzione: se un giorno servisse
 aritmetica esatta, `px_raw`/`sz_raw` conservano il testo originale.
+
+**Su quanti giorni si deduplica.** `dates=None` legge l'intera partizione della
+coin, ed e' il default perche' e' la risposta certa. Ma il costo cresce con lo
+storico raccolto e non con cio' che serve a chi legge: su questa macchina un
+esaurimento di memoria ha gia' congelato il collector per 82 minuti, quindi chi
+lavora su una finestra passa l'elenco dei giorni che gli interessano piu' un
+margine.
+
+Quanto margine e' un fatto misurato, non una scelta: sull'intero mainnet
+raccolto la distanza massima fra due consegne dello stesso `tid` e' **264 s**
+(SOL; BTC 145 s, ETH 224 s, HYPE 195 s, su 12,1 milioni di consegne e 17.017
+`tid` consegnati piu' di una volta). Un margine di un giorno per lato e' 327
+volte quel massimo. Se un giorno la distanza superasse il margine, l'effetto
+sarebbe di tenere la ritrasmissione invece della consegna originale per i
+`tid` a cavallo del bordo — non un duplicato in piu', ma un trade datato al
+momento della riconnessione.
 """
 
 from __future__ import annotations
+
+import os
 
 from .dataset import accumulate, drop, glob_partition, read
 
@@ -58,20 +76,47 @@ TRADE_SELECT = """
 _CONTENT_HASH = "hash(side, px_raw, sz_raw, time_ms, tx_hash)"
 
 
-def exploded_sql(data_dir: str, coin: str = "*") -> str:
+def _source(data_dir: str, coin: str, dates: list[str] | None) -> str:
+    """L'espressione di lettura: tutta la partizione, o i soli giorni chiesti.
+
+    I giorni che non esistono su disco vengono scartati qui: `read_parquet` su
+    un glob senza file solleva, e un giorno mancante ai bordi della finestra e'
+    normale (il primo giorno di raccolta, o domani).
+    """
+    if dates is None:
+        return read(glob_partition(data_dir, CHANNEL, coin))
+    globs = [
+        os.path.join(data_dir, CHANNEL, coin, f"date={d}", "hour=*", "*.parquet")
+        for d in dates
+        if os.path.isdir(os.path.join(data_dir, CHANNEL, coin, f"date={d}"))
+    ]
+    if not globs:
+        # Nessun giorno utile: una tabella vuota con lo stesso schema, cosi'
+        # che chi legge riceva zero righe invece di un errore di glob.
+        return ("(SELECT NULL::BIGINT AS ts_local_ns, NULL::VARCHAR AS raw "
+                "WHERE false)")
+    return "(" + " UNION ALL ".join(
+        f"SELECT ts_local_ns, raw FROM {read(g)}" for g in globs
+    ) + ")"
+
+
+def exploded_sql(data_dir: str, coin: str = "*",
+                 dates: list[str] | None = None) -> str:
     """Sotto-query con una riga per trade CONSEGNATO (duplicati compresi).
 
     E' la vista grezza: serve a contare le ritrasmissioni. Chi vuole i trade
-    per calcolarci sopra qualcosa usa `dedup_sql`.
+    per calcolarci sopra qualcosa usa `dedup_sql`. `dates` limita la lettura ai
+    giorni indicati: vedi la docstring del modulo per quanto margine serve.
     """
-    src = read(glob_partition(data_dir, CHANNEL, coin))
+    src = _source(data_dir, coin, dates)
     return f"""(
         SELECT {TRADE_SELECT}
         FROM (SELECT ts_local_ns, unnest(json_extract(raw, '$[*]')) AS j FROM {src})
     )"""
 
 
-def dedup_sql(data_dir: str, coin: str = "*") -> str:
+def dedup_sql(data_dir: str, coin: str = "*",
+              dates: list[str] | None = None) -> str:
     """Sotto-query con una riga per `tid`: la prima consegna osservata.
 
     Usabile direttamente in un FROM:
@@ -85,7 +130,7 @@ def dedup_sql(data_dir: str, coin: str = "*") -> str:
     esattamente il look-ahead che CLAUDE.md vieta di ignorare.
     """
     return f"""(
-        SELECT * FROM {exploded_sql(data_dir, coin)}
+        SELECT * FROM {exploded_sql(data_dir, coin, dates)}
         QUALIFY row_number() OVER (
             PARTITION BY tid ORDER BY ts_local_ns, tx_hash
         ) = 1
