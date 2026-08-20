@@ -61,16 +61,19 @@ esce *finché il premio resta in mezzo*, e si esce da **entrambi** i lati.
   anche il **massimo** osservato su quella coin. Nell'istogramma si vede un
   "muro" netto: tante ore impilate sul valore di default, coda libera a
   sinistra, niente a destra;
+- il muro c'è su tutte e quattro, di altezza diversa: ore esattamente al
+  default 128/240 su BTC, 107 su ETH, 186 su HYPE, 75 su SOL;
 - su **ETH e HYPE il default è stato superato**: massimo orario 0,00267% su ETH
-  e 0,0145% su HYPE, cioè fino a undici volte il default. Non è un tetto;
+  e 0,0145% su HYPE, cioè quasi dodici volte il default. Non è un tetto;
 - nel complesso il costo di un long, annualizzato sul periodo, è stato
   **BTC 7,0% · ETH 7,6% · HYPE 10,4% · SOL 6,4%**: tutti *sotto* l'11%, perché
   il perp ha scambiato sotto lo spot quasi sempre (su BTC il mark price è stato
   sotto l'oracolo nel **98,3%** delle ore, su ETH nel 99,6%).
 
 **Cosa aspettarti se apri un long.** Come situazione normale, circa **11%
-annualizzato** (0,00125% × 24 × 365 = 10,95%): è il default, e nella maggior
-parte delle ore paghi esattamente quello. Meno — fino a **incassare** funding
+annualizzato** (0,00125% × 24 × 365 = 10,95%): è il default, e in una quota
+grande delle ore paghi esattamente quello — nel periodo misurato dal 31% delle
+ore su SOL al 78% su HYPE. Meno — fino a **incassare** funding
 invece di pagarlo — quando il premio è negativo, come nei dieci giorni che
 abbiamo misurato. Molto di più nei regimi fortemente rialzisti, quando quasi
 tutti sono long e il perp scambia sopra lo spot: lì il funding esce dalla banda
