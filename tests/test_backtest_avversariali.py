@@ -145,11 +145,11 @@ class TestStrategiaCasuale(unittest.TestCase):
         s = sigma_of(r, m)
         return d["netto"] + d["conto_atteso"], s, d, r
 
-    def test_su_venti_ripetizioni_la_media_degli_scarti_e_zero(self) -> None:
+    def test_su_cento_ripetizioni_la_media_degli_scarti_e_zero(self) -> None:
         """Un tiro solo non dimostra niente: con sigma 11 un valore compatibile
         col caso lo sarebbe anche parecchio piu' in la'. Qui si guarda la MEDIA
-        degli scarti su venti mercati e venti strategie diversi, il cui errore
-        standard e' sigma/radice(N) — venti volte piu' stretto del singolo."""
+        degli scarti su cento mercati e cento strategie diversi, il cui errore
+        standard e' sigma/radice(N) — dieci volte piu' stretto del singolo."""
         scarti, sigmi = [], []
         for i in range(1, self.RIPETIZIONI + 1):
             scarto, s, _, _ = self._tiro(100 + i, 200 + i)
@@ -172,6 +172,31 @@ class TestStrategiaCasuale(unittest.TestCase):
             es = (sum(sigmi[:n]) / n) / n ** 0.5
             print(f"[casuale] progressivo N={n:3d}: media {mu:+9.4f}, "
                   f"errore standard {es:7.4f}, t {mu / es:+6.3f}")
+        # Il campione e' stato esteso DOPO aver visto il t di 20 ripetizioni
+        # (+2,09). L'estensione e' legittima solo se dichiarata cosi': i due
+        # blocchi separati, non il solo totale. Se il blocco aggiunto avesse un
+        # t molto diverso dal primo, l'estensione avrebbe cambiato il
+        # risultato invece di precisarlo.
+        for nome, campione in (("primo blocco (1-20)", scarti[:20]),
+                               ("blocco aggiunto (21-100)", scarti[20:]),
+                               ("totale (1-100)", scarti)):
+            n = len(campione)
+            mu = sum(campione) / n
+            es = sigma_medio / n ** 0.5
+            print(f"[casuale] {nome:24s} N={n:3d} media {mu:+9.4f} t {mu / es:+6.3f}")
+        # Terza statistica, indipendente dalla media: ogni scarto diviso per il
+        # SUO sigma da' un chi quadro con N gradi di liberta'. Misura se la
+        # dispersione e' quella prevista senza passare per il sigma medio, che
+        # varia da tiro a tiro. Stampato e non asserito di proposito: su questa
+        # famiglia di semi vale 66,97 (-2,3 sigma), e su 1000 ripetizioni della
+        # stessa famiglia 1017,9 (+0,4 sigma) — la carenza di varianza a 100 e'
+        # una fluttuazione, e una soglia scelta ora sarebbe scelta su di essa.
+        chi2 = sum((x / s) ** 2 for x, s in zip(scarti, sigmi))
+        print(f"[casuale] chi quadro sum (scarto/sigma)^2 = {chi2!r} su "
+              f"{self.RIPETIZIONI} gradi di liberta' "
+              f"({(chi2 - self.RIPETIZIONI) / (2 * self.RIPETIZIONI) ** 0.5:+.2f} "
+              f"sigma), dispersione osservata / sigma teorico "
+              f"{dev / sigma_medio:.4f}")
         # Stessa forma dello shuffle: la media deve stare dentro tre errori
         # standard, dove l'errore standard viene dalla varianza NOTA della
         # passeggiata, non dai numeri appena visti.
@@ -181,6 +206,49 @@ class TestStrategiaCasuale(unittest.TestCase):
         # passerebbe il controllo sopra e fallisce questo.
         self.assertGreater(dev, 0.3 * sigma_medio)
         self.assertLess(dev, 3.0 * sigma_medio)
+
+    def test_i_passi_del_sigma_sono_quelli_che_il_motore_ha_davvero_fatto(
+            self) -> None:
+        """Il sigma teorico conta gli stessi passi che il motore ha percorso?
+
+        La domanda nasce da un numero: su 100 ripetizioni la dispersione
+        osservata degli scarti era 0,826 volte il sigma teorico — un 32% di
+        varianza mancante. Delle due grandezze una poteva essere sbagliata, e la
+        prima cosa da escludere e' che `sigma_of` sommi passi che non esistono:
+        somma `pos^2 * var_barra` su TUTTE le righe di equity, ma solo le righe
+        con posizione aperta e con una barra successiva contribuiscono davvero.
+
+        Qui si confrontano i due conteggi sullo stesso tiro. Non e' una soglia:
+        e' un'uguaglianza fra numeri interi.
+        """
+        scarto, s, d, r = self._tiro(self.SEED_MERCATO, self.SEED_STRATEGIA)
+        m = fx.market(n_bars=400, seed=self.SEED_MERCATO)
+        righe = r.journal.equity_rows
+        pos = [row.get(f"pos_{m.coin}") or 0.0 for row in righe]
+        mark = [row[f"mark_{m.coin}"] for row in righe]
+        # Un passo "effettivo" e' una barra in cui il motore teneva una
+        # posizione E in cui esisteva la barra dopo su cui guadagnarla o
+        # perderla: l'ultima riga non ha un incremento davanti a se'.
+        effettivi = sum(1 for k in range(len(righe) - 1) if pos[k] != 0.0)
+        nel_sigma = sum(1 for p in pos if p != 0.0)
+        flat = sum(1 for p in pos if p == 0.0) / len(pos)
+        percorso = sum(pos[k] * (mark[k + 1] - mark[k])
+                       for k in range(len(righe) - 1))
+        print(f"\n[varianza] righe di equity {len(righe)}, incrementi di mark "
+              f"{len(righe) - 1}, passi effettivi {effettivi}, passi nel sigma "
+              f"teorico {nel_sigma}, frazione flat {flat:.4f}")
+        print(f"[varianza] PnL di percorso sum(pos*dmark) {percorso!r} vs "
+              f"lordo_al_mid {d['lordo_al_mid']!r}, differenza "
+              f"{percorso - d['lordo_al_mid']!r}")
+        # I due conteggi coincidono, e la ragione e' strutturale: l'ultima riga
+        # e' sempre piatta perche' il motore chiude d'ufficio a fine run. Se
+        # quella chiusura sparisse, questa uguaglianza diventerebbe rossa.
+        self.assertEqual(effettivi, nel_sigma)
+        self.assertEqual(pos[-1], 0.0)
+        # E il PnL che il giornale registra E' il PnL del percorso, riga per
+        # riga: se non lo fosse, confrontarlo con un sigma calcolato sul
+        # percorso non avrebbe senso.
+        self.assertAlmostEqual(percorso, d["lordo_al_mid"], places=6)
 
     def test_pnl_vale_meno_il_conto_entro_tre_sigma(self) -> None:
         scarto, s, d, r = self._tiro(self.SEED_MERCATO, self.SEED_STRATEGIA)

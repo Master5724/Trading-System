@@ -205,6 +205,14 @@ def context(con, data_dir: str, coins: tuple[str, ...],
     margine. E' la fase che fa il picco di memoria dell'intera esecuzione —
     misurato, non supposto — perche' ricostruisce l'ordine di scrittura di tre
     canali per coin su tutto lo storico raccolto.
+
+    Limitare i giorni porta con se' il pavimento fisso di 30 s al posto della
+    soglia derivata dal p99 (vedi `costs.sources.unreliable_hours`): su una
+    coin a bassa frequenza costa ore marcate — su SOL, 11 delle 24 ore della
+    finestra provata — perche' 30 s di silenzio sui trade non distinguono un
+    mercato fermo da una raccolta interrotta. E' il verso giusto in cui
+    sbagliare, ma non e' gratis, ed e' per questo che il riepilogo stampa le
+    soglie e le ore bloccate dentro la finestra.
     """
     partitions = [(ch, c) for c in sorted(coins) for ch in REQUIRED_CHANNELS]
     soglie: list = []

@@ -149,10 +149,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         w(f"{coin}: ore bloccate DENTRO la finestra {len(blocked_in_window)} "
           f"{blocked_in_window}\n")
-        # La soglia decide cosa e' un buco e cosa no, e cambia col p99 degli
-        # intervalli osservati: leggendo pochi giorni puo' salire. Il buco piu'
-        # corto mai osservato su questi dati dura 41,4 s, quindi una soglia che
-        # si avvicina a quel numero va vista, non dedotta.
+        # La soglia decide cosa e' un buco e cosa no. Leggendo una finestra e'
+        # il pavimento fisso di 30 s per ogni partizione (`pavimento_fisso`):
+        # il p99 della finestra salirebbe proprio quando la raccolta e' andata
+        # peggio. Resta stampata perche' e' un numero che cambia il risultato,
+        # e su una coin lenta il pavimento costa ore marcate: su SOL, 11 delle
+        # 24 ore dell'esecuzione A.
         w(f"{coin}: soglie di buco (s) {s['soglie']}\n")
 
     w("\n=== BARRE E ORDINI ===\n")

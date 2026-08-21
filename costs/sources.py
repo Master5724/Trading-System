@@ -117,20 +117,23 @@ def unreliable_hours(con, data_dir: str, partitions: list[tuple[str, str]],
     sembra sana.
 
     `dates` viene passato a `sanity.build_ordered` e limita la lettura a quei
-    giorni. Non e' gratis nemmeno in termini di significato: la soglia di
-    `derivedgaps` e' un multiplo del p99 degli intervalli OSSERVATI, quindi
-    calcolarla su tre giorni invece che su tutto lo storico puo' spostarla di
-    poco. Il default resta l'intero storico; chi restringe deve verificare che
-    i buchi trovati sulla stessa finestra siano gli stessi, non darlo per
-    scontato.
+    giorni. Il default resta l'intero storico, e con esso la soglia derivata dal
+    p99. Quando invece si legge una finestra, la soglia diventa il PAVIMENTO
+    FISSO `min_gap_s`: il p99 di una finestra si calcola sulle stesse righe di
+    cui deve giudicare la completezza, quindi sale proprio quando la raccolta e'
+    andata peggio e maschera la degradazione che dovrebbe rilevare (misurato:
+    `trades/SOL` 82,5 s sullo storico, 109,7 s su tre giorni). Le soglie usate
+    escono da `thresholds_out` con `basis = pavimento_fisso`.
 
     `thresholds_out`, se passata, riceve le soglie effettivamente usate. Esiste
     perche' una soglia e' un numero che cambia il risultato senza comparire da
     nessuna parte: chi restringe i giorni deve poterla leggere, non dedurla.
     """
     sanity.build_ordered(con, data_dir, partitions, dates)
-    soglie = derivedgaps.build_thresholds(con, p99_multiple=p99_multiple,
-                                          min_gap_s=min_gap_s)
+    soglie = derivedgaps.build_thresholds(
+        con, p99_multiple=p99_multiple, min_gap_s=min_gap_s,
+        fixed_s=None if dates is None else min_gap_s,
+    )
     if thresholds_out is not None:
         thresholds_out.extend(soglie)
     derivedgaps.build(con)

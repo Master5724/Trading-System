@@ -58,6 +58,18 @@ righe consegnate con quelle contate sulla finestra. Oggi quel confronto esiste
 solo lì. Dove non esiste, un conteggio va almeno **riportato**: un numero che
 nessuno guarda non è un controllo.
 
+**Requisito trasversale — il numero di ripetizioni di un test statistico si
+fissa PRIMA di guardare il risultato.** Se lo si estende dopo averlo visto, il
+report deve riportare tre cose insieme: il t del campione iniziale, il t del
+campione finale, e la differenza fra i due blocchi (il campione aggiunto,
+misurato da solo). Altrimenti "ho allargato il campione" e "ho continuato a
+tirare finché il numero non mi è piaciuto" producono lo stesso report.
+
+Anche questo nasce da un caso vero del Task 3: la media degli scarti della
+strategia casuale usciva a +2,09 errori standard su 20 ripetizioni e a +0,90 su
+100. L'estensione era legittima — stessa famiglia di semi, nessuna selezione —
+ma dal solo numero finale non si distingue dal caso in cui non lo fosse.
+
 ---
 
 ## Task 2 — Modello di costo
