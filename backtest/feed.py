@@ -192,16 +192,24 @@ class ParquetFeed:
         return heapq.merge(*streams, key=sort_key)
 
 
-def context(con, data_dir: str, coins: tuple[str, ...]
+def context(con, data_dir: str, coins: tuple[str, ...],
+            dates: list[str] | None = None
             ) -> tuple[dict[str, FundingSeries], BlockedHours, dict]:
     """Serie di funding e ore bloccate, dalle funzioni gia' esistenti.
 
     Le ore bloccate sono l'unione, per coin, dei buchi derivati sui tre canali
     da cui il motore dipende. Marcare in eccesso e' l'errore giusto: costa
     ore di dati, mentre l'errore opposto costa un risultato che sembra sano.
+
+    `dates` limita la derivazione dei buchi ai giorni della finestra piu' il
+    margine. E' la fase che fa il picco di memoria dell'intera esecuzione —
+    misurato, non supposto — perche' ricostruisce l'ordine di scrittura di tre
+    canali per coin su tutto lo storico raccolto.
     """
     partitions = [(ch, c) for c in sorted(coins) for ch in REQUIRED_CHANNELS]
-    unreliable = sources.unreliable_hours(con, data_dir, partitions)
+    soglie: list = []
+    unreliable = sources.unreliable_hours(con, data_dir, partitions,
+                                          dates=dates, thresholds_out=soglie)
     per_coin: dict[str, frozenset[int]] = {}
     funding: dict[str, FundingSeries] = {}
     stats: dict[str, dict] = {}
@@ -219,6 +227,10 @@ def context(con, data_dir: str, coins: tuple[str, ...]
             "regolamenti_noti": len(funding[coin]),
             "primo_regolamento": (funding[coin].span or (None, None))[0],
             "ultimo_definitivo": funding[coin].last_final,
+            "soglie": [
+                (r["channel"], round(r["threshold_s"], 3), r["basis"])
+                for r in soglie if r["coin"] == coin
+            ],
         }
     return funding, BlockedHours(per_coin=per_coin), stats
 

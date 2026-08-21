@@ -26,7 +26,7 @@ from costs import Side, sources                                    # noqa: E402
 from costs.funding import NS_PER_HOUR                              # noqa: E402
 
 from backtest import Engine, EngineConfig                          # noqa: E402
-from backtest.feed import ParquetFeed, context                     # noqa: E402
+from backtest.feed import ParquetFeed, context, dates_between      # noqa: E402
 from backtest import strategies as strat                           # noqa: E402
 
 DEFAULT_DATA_DIR = "/home/ubuntu/hl-data/mainnet"
@@ -97,7 +97,8 @@ def main(argv: list[str] | None = None) -> int:
     # scrive sullo stesso terminale: l'output integrale che finisce nel
     # riepilogo del task non deve contenere sequenze di controllo.
     con.execute("SET enable_progress_bar = false")
-    funding, blocked, fstats = context(con, args.data_dir, coins)
+    giorni = dates_between(args.start, args.end)
+    funding, blocked, fstats = context(con, args.data_dir, coins, giorni)
     t_ctx = time.monotonic() - t0
     # `ru_maxrss` e' un massimo storico, non l'occupazione istantanea: leggerlo
     # a fine di ogni fase dice QUALE fase ha fatto il picco, che e' l'unica
@@ -124,6 +125,7 @@ def main(argv: list[str] | None = None) -> int:
     w(f"coin                  {','.join(coins)}\n")
     w(f"finestra              {args.start} -> {args.end} "
       f"({(args.end - args.start) / 3600e9:.2f} ore)\n")
+    w(f"giorni letti          {','.join(giorni)} (finestra + 1 per lato)\n")
     w(f"barra                 {cfg.bar_s}s\n")
     w(f"strategia             {args.strategy} (seed={args.seed}, "
       f"notional={args.notional!r})\n")
@@ -147,6 +149,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         w(f"{coin}: ore bloccate DENTRO la finestra {len(blocked_in_window)} "
           f"{blocked_in_window}\n")
+        # La soglia decide cosa e' un buco e cosa no, e cambia col p99 degli
+        # intervalli osservati: leggendo pochi giorni puo' salire. Il buco piu'
+        # corto mai osservato su questi dati dura 41,4 s, quindi una soglia che
+        # si avvicina a quel numero va vista, non dedotta.
+        w(f"{coin}: soglie di buco (s) {s['soglie']}\n")
 
     w("\n=== BARRE E ORDINI ===\n")
     w(f"barre                 {r.n_bars}\n")

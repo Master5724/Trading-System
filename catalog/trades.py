@@ -48,9 +48,14 @@ momento della riconnessione.
 
 from __future__ import annotations
 
-import os
-
-from .dataset import accumulate, drop, glob_partition, read
+from .dataset import (
+    accumulate,
+    drop,
+    glob_partition,
+    globs_for_dates,
+    read,
+    read_many,
+)
 
 CHANNEL = "trades"
 
@@ -85,19 +90,13 @@ def _source(data_dir: str, coin: str, dates: list[str] | None) -> str:
     """
     if dates is None:
         return read(glob_partition(data_dir, CHANNEL, coin))
-    globs = [
-        os.path.join(data_dir, CHANNEL, coin, f"date={d}", "hour=*", "*.parquet")
-        for d in dates
-        if os.path.isdir(os.path.join(data_dir, CHANNEL, coin, f"date={d}"))
-    ]
+    globs = globs_for_dates(data_dir, CHANNEL, coin, dates)
     if not globs:
         # Nessun giorno utile: una tabella vuota con lo stesso schema, cosi'
         # che chi legge riceva zero righe invece di un errore di glob.
         return ("(SELECT NULL::BIGINT AS ts_local_ns, NULL::VARCHAR AS raw "
                 "WHERE false)")
-    return "(" + " UNION ALL ".join(
-        f"SELECT ts_local_ns, raw FROM {read(g)}" for g in globs
-    ) + ")"
+    return read_many(globs, "ts_local_ns, raw")
 
 
 def exploded_sql(data_dir: str, coin: str = "*",

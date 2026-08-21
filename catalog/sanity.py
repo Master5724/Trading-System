@@ -11,7 +11,15 @@ altro codice senza doverli riestrarre da una stringa formattata.
 
 from __future__ import annotations
 
-from .dataset import accumulate, drop, glob_channel, glob_partition, read
+from .dataset import (
+    accumulate,
+    drop,
+    glob_channel,
+    glob_partition,
+    globs_for_dates,
+    read,
+    read_many,
+)
 
 # Percentili usati ovunque nel modulo. Estremi inclusi: e' la coda che dice se
 # un dato e' inutilizzabile, la mediana da sola non lo direbbe mai.
@@ -97,7 +105,8 @@ def duplicates(con, data_dir: str, partitions) -> list[dict]:
     )
 
 
-def build_ordered(con, data_dir: str, partitions) -> None:
+def build_ordered(con, data_dir: str, partitions,
+                  dates: list[str] | None = None) -> None:
     """Materializza le righe nell'ordine in cui sono state scritte.
 
     L'ordine di scrittura e' (part-file, riga dentro il file): il writer
@@ -105,11 +114,36 @@ def build_ordered(con, data_dir: str, partitions) -> None:
     del batch, quindi ordinare per `part_ns` ricostruisce l'ordine di arrivo
     senza assumere che i timestamp siano gia' ordinati — che e' proprio la
     cosa che stiamo verificando.
+
+    **`dates`** limita la lettura ai giorni indicati. Il default resta
+    `None`, cioe' tutto lo storico: e' la risposta certa, ed e' quella che il
+    catalogo deve dare quando fa l'inventario dei dati. Chi lavora su una
+    finestra passa i suoi giorni piu' un margine, perche' altrimenti il costo
+    di questa scansione cresce con la raccolta invece che con cio' che serve —
+    ed e' la scansione che fa il picco di memoria dell'intero percorso, non la
+    dedup dei trade.
+
+    **Il margine deve esserci.** Il `delta_ns` della prima riga di ogni giorno
+    e' calcolato rispetto alla riga precedente della stessa partizione: se il
+    giorno prima non e' stato letto, quel delta e' NULL e un buco a cavallo
+    della mezzanotte non verrebbe visto. Un giorno per lato basta e avanza,
+    perche' un buco piu' lungo di un giorno intero non e' un buco, e' una
+    interruzione della raccolta.
     """
     drop(con, "ts_ordered")
     for channel, coin in partitions:
-        src = read(glob_partition(data_dir, channel, coin),
-                   filename=True, file_row_number=True)
+        if dates is None:
+            src = read(glob_partition(data_dir, channel, coin),
+                       filename=True, file_row_number=True)
+        else:
+            globs = globs_for_dates(data_dir, channel, coin, dates)
+            if not globs:
+                continue
+            src = read_many(
+                globs,
+                "channel, coin, ts_local_ns, filename, file_row_number",
+                filename=True, file_row_number=True,
+            )
         accumulate(
             con,
             "ts_ordered",

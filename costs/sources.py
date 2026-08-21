@@ -100,6 +100,8 @@ def _day_glob(data_dir: str, channel: str, coin: str, date: str) -> str:
 def unreliable_hours(con, data_dir: str, partitions: list[tuple[str, str]],
                      p99_multiple: float = derivedgaps.DEFAULT_P99_MULTIPLE,
                      min_gap_s: float = derivedgaps.DEFAULT_MIN_GAP_S,
+                     dates: list[str] | None = None,
+                     thresholds_out: list | None = None,
                      ) -> dict[tuple[str, str], frozenset[int]]:
     """Ore (indice orario UTC) attraversate da un buco derivato dai dati.
 
@@ -113,10 +115,24 @@ def unreliable_hours(con, data_dir: str, partitions: list[tuple[str, str]],
     11: l'estremo finale e' incluso. Marcare in eccesso e' l'errore giusto —
     costa un'ora di dati, mentre l'errore opposto costa una statistica che
     sembra sana.
+
+    `dates` viene passato a `sanity.build_ordered` e limita la lettura a quei
+    giorni. Non e' gratis nemmeno in termini di significato: la soglia di
+    `derivedgaps` e' un multiplo del p99 degli intervalli OSSERVATI, quindi
+    calcolarla su tre giorni invece che su tutto lo storico puo' spostarla di
+    poco. Il default resta l'intero storico; chi restringe deve verificare che
+    i buchi trovati sulla stessa finestra siano gli stessi, non darlo per
+    scontato.
+
+    `thresholds_out`, se passata, riceve le soglie effettivamente usate. Esiste
+    perche' una soglia e' un numero che cambia il risultato senza comparire da
+    nessuna parte: chi restringe i giorni deve poterla leggere, non dedurla.
     """
-    sanity.build_ordered(con, data_dir, partitions)
-    derivedgaps.build_thresholds(con, p99_multiple=p99_multiple,
-                                 min_gap_s=min_gap_s)
+    sanity.build_ordered(con, data_dir, partitions, dates)
+    soglie = derivedgaps.build_thresholds(con, p99_multiple=p99_multiple,
+                                          min_gap_s=min_gap_s)
+    if thresholds_out is not None:
+        thresholds_out.extend(soglie)
     derivedgaps.build(con)
     out: dict[tuple[str, str], set[int]] = {p: set() for p in partitions}
     rows = con.execute(

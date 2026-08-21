@@ -122,15 +122,70 @@ class TestStrategiaCasuale(unittest.TestCase):
 
     SEED_MERCATO = 3
     SEED_STRATEGIA = 11
+    # Cento e non venti. Con venti la media degli scarti e' uscita a +2,09
+    # errori standard: dentro la soglia, ma abbastanza vicino al bordo da non
+    # poter dire "compatibile con zero" e passare oltre. La risposta a un
+    # campione troppo piccolo e' allargarlo, non ripescare i semi: la famiglia
+    # e' la stessa (100+i, 200+i), estesa da i<=20 a i<=100. Il progressivo
+    # stampato dal test mostra il t che scende da +2,09 a +0,90, che e' il
+    # comportamento di una media che tende a zero, non di un bias.
+    RIPETIZIONI = 100
 
-    def test_pnl_vale_meno_il_conto_entro_tre_sigma(self) -> None:
-        m = fx.market(n_bars=400, seed=self.SEED_MERCATO)
-        r = run(RandomTaker(m.coin, notional=NOTIONAL, seed=self.SEED_STRATEGIA,
+    def _tiro(self, seed_mercato: int, seed_strategia: int):
+        """Un mercato e una strategia: restituisce scarto, sigma e scomposizione.
+
+        `scarto` e' PnL netto meno il conto atteso col segno cambiato. Se il
+        motore e' corretto ha valore atteso zero, perche' coincide col PnL
+        lordo al mid di una martingala.
+        """
+        m = fx.market(n_bars=400, seed=seed_mercato)
+        r = run(RandomTaker(m.coin, notional=NOTIONAL, seed=seed_strategia,
                             p_change=0.2), m)
         d = decompose(r)
         s = sigma_of(r, m)
+        return d["netto"] + d["conto_atteso"], s, d, r
+
+    def test_su_venti_ripetizioni_la_media_degli_scarti_e_zero(self) -> None:
+        """Un tiro solo non dimostra niente: con sigma 11 un valore compatibile
+        col caso lo sarebbe anche parecchio piu' in la'. Qui si guarda la MEDIA
+        degli scarti su venti mercati e venti strategie diversi, il cui errore
+        standard e' sigma/radice(N) — venti volte piu' stretto del singolo."""
+        scarti, sigmi = [], []
+        for i in range(1, self.RIPETIZIONI + 1):
+            scarto, s, _, _ = self._tiro(100 + i, 200 + i)
+            scarti.append(scarto)
+            sigmi.append(s)
+        media = sum(scarti) / len(scarti)
+        var = sum((x - media) ** 2 for x in scarti) / (len(scarti) - 1)
+        dev = var ** 0.5
+        sigma_medio = sum(sigmi) / len(sigmi)
+        errore_standard = sigma_medio / self.RIPETIZIONI ** 0.5
+        print(f"\n[casuale x{self.RIPETIZIONI}] media degli scarti "
+              f"{media!r}, deviazione standard campionaria {dev!r}, "
+              f"sigma teorico medio {sigma_medio!r}")
+        print(f"[casuale x{self.RIPETIZIONI}] media in unita' di sigma: "
+              f"{media / sigma_medio:+.4f} sigma del singolo tiro, "
+              f"{media / errore_standard:+.3f} errori standard della media "
+              f"(errore standard {errore_standard!r})")
+        for n in (20, 50, self.RIPETIZIONI):
+            mu = sum(scarti[:n]) / n
+            es = (sum(sigmi[:n]) / n) / n ** 0.5
+            print(f"[casuale] progressivo N={n:3d}: media {mu:+9.4f}, "
+                  f"errore standard {es:7.4f}, t {mu / es:+6.3f}")
+        # Stessa forma dello shuffle: la media deve stare dentro tre errori
+        # standard, dove l'errore standard viene dalla varianza NOTA della
+        # passeggiata, non dai numeri appena visti.
+        self.assertLess(abs(media), 3.0 * errore_standard)
+        # E la dispersione osservata deve essere quella prevista, non un
+        # decimo: una media a zero ottenuta perche' il motore non muove niente
+        # passerebbe il controllo sopra e fallisce questo.
+        self.assertGreater(dev, 0.3 * sigma_medio)
+        self.assertLess(dev, 3.0 * sigma_medio)
+
+    def test_pnl_vale_meno_il_conto_entro_tre_sigma(self) -> None:
+        scarto, s, d, r = self._tiro(self.SEED_MERCATO, self.SEED_STRATEGIA)
+        m = fx.market(n_bars=400, seed=self.SEED_MERCATO)
         atteso = -d["conto_atteso"]
-        scarto = d["netto"] - atteso
         print(f"\n[casuale] seed mercato {self.SEED_MERCATO}, seed strategia "
               f"{self.SEED_STRATEGIA}, barre {r.n_bars}, ordini {r.n_orders}, "
               f"fill {r.n_fills}")
