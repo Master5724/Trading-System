@@ -26,6 +26,18 @@ Test (solo stdlib, non serve installare niente):
 python -m unittest discover -s tests -v
 ```
 
+Con `pytest` installato nello stesso virtualenv si ottiene lo stesso esito piu'
+il conteggio dei subtest, che `unittest` non riporta:
+
+```bash
+python -m pytest -q -s
+```
+
+Vale la pena dirlo perche' l'ambiguita' e' gia' costata un errore in un report:
+i due comandi vanno lanciati **col python del virtualenv del progetto**
+(`.venv/bin/python`), non con uno creato al volo altrove. Un interprete diverso
+esegue codice diverso da quello che gira in produzione.
+
 Parti su `network: testnet`. Passa a `mainnet` solo quando hai 24h di dati puliti
 e il watchdog non ha loggato nulla di anomalo.
 

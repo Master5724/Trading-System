@@ -36,6 +36,15 @@ from tests import backtest_fixture as fx
 BAR_S = 60
 NOTIONAL = 1_000.0
 
+# Chi quadro della strategia casuale su 1000 ripetizioni, misurato una volta
+# fuori dalla suite perche' costa cento secondi di CPU. Si rigenera con
+# `python -m tools.chi2_strategia_casuale 1000`, che usa la stessa famiglia di
+# semi di questo file: il progressivo a N=100 che stampa deve coincidere con
+# quello stampato qui sotto, altrimenti una delle due parti e' cambiata.
+CHI2_RIFERIMENTO_N = 1000
+CHI2_RIFERIMENTO = 1017.90
+CHI2_RIFERIMENTO_SIGMA = +0.40
+
 
 def run(strategy, m: fx.Market, bar_s: int = BAR_S, rate: float = 0.0,
         blocked: BlockedHours | None = None, **kw):
@@ -187,16 +196,25 @@ class TestStrategiaCasuale(unittest.TestCase):
         # Terza statistica, indipendente dalla media: ogni scarto diviso per il
         # SUO sigma da' un chi quadro con N gradi di liberta'. Misura se la
         # dispersione e' quella prevista senza passare per il sigma medio, che
-        # varia da tiro a tiro. Stampato e non asserito di proposito: su questa
-        # famiglia di semi vale 66,97 (-2,3 sigma), e su 1000 ripetizioni della
-        # stessa famiglia 1017,9 (+0,4 sigma) — la carenza di varianza a 100 e'
-        # una fluttuazione, e una soglia scelta ora sarebbe scelta su di essa.
+        # varia da tiro a tiro. Stampato e non asserito di proposito: una
+        # soglia scelta adesso sarebbe scelta sul numero appena visto.
         chi2 = sum((x / s) ** 2 for x, s in zip(scarti, sigmi))
+        sigma_chi2 = (chi2 - self.RIPETIZIONI) / (2 * self.RIPETIZIONI) ** 0.5
+        # Il riferimento a N=1000 sta sulla STESSA riga apposta. Il -2,3 sigma
+        # qui sopra, letto da solo, sembra un allarme; e' invece quello che una
+        # fluttuazione fa quando il campione e' piccolo, e si vede solo
+        # allargandolo. Chi legge il test non deve andarselo a cercare altrove.
         print(f"[casuale] chi quadro sum (scarto/sigma)^2 = {chi2!r} su "
-              f"{self.RIPETIZIONI} gradi di liberta' "
-              f"({(chi2 - self.RIPETIZIONI) / (2 * self.RIPETIZIONI) ** 0.5:+.2f} "
-              f"sigma), dispersione osservata / sigma teorico "
-              f"{dev / sigma_medio:.4f}")
+              f"{self.RIPETIZIONI} gdl ({sigma_chi2:+.2f} sigma, "
+              f"chi2/gdl {chi2 / self.RIPETIZIONI:.4f})  |  riferimento su "
+              f"{CHI2_RIFERIMENTO_N} ripetizioni della stessa famiglia di semi: "
+              f"{CHI2_RIFERIMENTO!r} su {CHI2_RIFERIMENTO_N} gdl "
+              f"({CHI2_RIFERIMENTO_SIGMA:+.2f} sigma, chi2/gdl "
+              f"{CHI2_RIFERIMENTO / CHI2_RIFERIMENTO_N:.4f}) -> la carenza di "
+              f"varianza a N={self.RIPETIZIONI} e' una fluttuazione")
+        print(f"[casuale] dispersione osservata / sigma teorico "
+              f"{dev / sigma_medio:.4f} (a N={CHI2_RIFERIMENTO_N}: "
+              f"{(CHI2_RIFERIMENTO / CHI2_RIFERIMENTO_N) ** 0.5:.4f})")
         # Stessa forma dello shuffle: la media deve stare dentro tre errori
         # standard, dove l'errore standard viene dalla varianza NOTA della
         # passeggiata, non dai numeri appena visti.

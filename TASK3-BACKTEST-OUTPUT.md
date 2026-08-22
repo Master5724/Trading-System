@@ -22,6 +22,9 @@ lettura su `/home/ubuntu/hl-data/mainnet`, col collector attivo.
 - [Quante righe legge `funding_series`](#funding-righe)
 - [Le tre esecuzioni rifatte col pavimento fisso](#rifatte)
 - [Suite completa dopo le modifiche](#suite4)
+- [78, 15 e 0: quale conteggio rispondeva a quale domanda](#contraddizione)
+- [I due runner della suite](#runner)
+- [Dov'era `pytest`: cronologia dell'ambiente](#ambiente)
 
 <a name="a"></a>
 ## Esecuzione A — 24 ore, strategia casuale
@@ -966,3 +969,165 @@ real	2m30.243s
 user	2m13.927s
 sys	0m21.280s
 ```
+
+<a name="contraddizione"></a>
+## 78, 15 e 0: quale conteggio di buchi rispondeva a quale domanda
+
+Il report della tornata precedente diceva *0 buchi sulla finestra A a quattro
+coin con le soglie storiche*; quello successivo *15 sulla stessa finestra*.
+Nessuno dei due numeri era sbagliato: contavano cose diverse e li ho chiamati
+tutti e due "buchi". Qui le due configurazioni girano oggi, con tre conteggi
+espliciti per partizione — `totale` (righe di `derived_gaps`), `nei 4gg` (buchi
+che iniziano nei quattro giorni letti dalla finestra), `toccano` (buchi che
+intersecano le 24 ore simulate).
+
+Le soglie storiche di oggi non coincidono con quelle del report precedente
+(`trades/SOL` 80,80 s contro 82,48 s, `trades/ETH` 49,73 contro 50,08,
+`trades/HYPE` 31,18 contro 32,07): lo storico e' cresciuto da 17 a 20 giorni e
+il p99 si e' spostato. E' la stessa retroazione che ha motivato il pavimento
+fisso, vista dall'altro capo.
+
+```
+Running as unit: run-r952875746853408eb2c53318d1d90f2b.scope; invocation ID: d8110ce15a98405e8328f06afb4205c8
+
+=== STORICO, soglie dal p99 dello storico ===
+giorni letti: TUTTI (storico)
+righe in ts_ordered: 13621523   righe in derived_gaps: 78   tempo 380.8s
+partizione                soglia            basis      p99  totale  nei 4gg  toccano
+l2Book/BTC                 30.00  minimo_assoluto     5.71       6        1        0
+trades/BTC                 30.00  minimo_assoluto     4.55       8        2        0
+activeAssetCtx/BTC         30.00  minimo_assoluto     1.41       6        1        0
+l2Book/ETH                 30.00  minimo_assoluto     5.71       6        1        0
+trades/ETH                 49.73              p99     9.95       8        2        0
+activeAssetCtx/ETH         30.00  minimo_assoluto     1.41       6        1        0
+l2Book/HYPE                30.00  minimo_assoluto     5.71       6        1        0
+trades/HYPE                31.18              p99     6.24       8        2        0
+activeAssetCtx/HYPE        30.00  minimo_assoluto     1.41       6        1        0
+l2Book/SOL                 30.00  minimo_assoluto     5.71       6        1        0
+trades/SOL                 80.80              p99    16.16       6        2        0
+activeAssetCtx/SOL         30.00  minimo_assoluto     1.41       6        1        0
+TOTALE                                                          78       16        0
+picco RSS finora 792.4 MB
+
+=== FINESTRA, soglie dal p99 della finestra ===
+giorni letti: 2026-08-15,2026-08-16,2026-08-17,2026-08-18
+righe in ts_ordered: 2430414   righe in derived_gaps: 15   tempo 51.2s
+partizione                soglia            basis      p99  totale  nei 4gg  toccano
+l2Book/BTC                 30.00  minimo_assoluto     5.69       1        1        0
+trades/BTC                 34.33              p99     6.87       2        2        0
+activeAssetCtx/BTC         30.00  minimo_assoluto     1.41       1        1        0
+l2Book/ETH                 30.00  minimo_assoluto     5.70       1        1        0
+trades/ETH                 69.32              p99    13.86       2        2        0
+activeAssetCtx/ETH         30.00  minimo_assoluto     1.41       1        1        0
+l2Book/HYPE                30.00  minimo_assoluto     5.70       1        1        0
+trades/HYPE                36.68              p99     7.34       2        2        0
+activeAssetCtx/HYPE        30.00  minimo_assoluto     1.41       1        1        0
+l2Book/SOL                 30.00  minimo_assoluto     5.70       1        1        0
+trades/SOL                109.69              p99    21.94       1        1        0
+activeAssetCtx/SOL         30.00  minimo_assoluto     1.41       1        1        0
+TOTALE                                                          15       15        0
+picco RSS finora 792.4 MB
+
+=== FINESTRA, pavimento fisso 30 s (comportamento attuale) ===
+giorni letti: 2026-08-15,2026-08-16,2026-08-17,2026-08-18
+righe in ts_ordered: 2430414   righe in derived_gaps: 240   tempo 21.3s
+partizione                soglia            basis      p99  totale  nei 4gg  toccano
+l2Book/BTC                 30.00  pavimento_fisso     5.69       1        1        0
+trades/BTC                 30.00  pavimento_fisso     6.87       2        2        0
+activeAssetCtx/BTC         30.00  pavimento_fisso     1.41       1        1        0
+l2Book/ETH                 30.00  pavimento_fisso     5.70       1        1        0
+trades/ETH                 30.00  pavimento_fisso    13.86      16       16        0
+activeAssetCtx/ETH         30.00  pavimento_fisso     1.41       1        1        0
+l2Book/HYPE                30.00  pavimento_fisso     5.70       1        1        0
+trades/HYPE                30.00  pavimento_fisso     7.34       2        2        0
+activeAssetCtx/HYPE        30.00  pavimento_fisso     1.41       1        1        0
+l2Book/SOL                 30.00  pavimento_fisso     5.70       1        1        0
+trades/SOL                 30.00  pavimento_fisso    21.94     212      212       50
+activeAssetCtx/SOL         30.00  pavimento_fisso     1.41       1        1        0
+TOTALE                                                         240      240       50
+picco RSS finora 792.4 MB
+
+picco RSS finale 792.4 MB
+```
+
+Il confronto fra le prime due configurazioni mostra anche un buco vero che la
+soglia della finestra NON trova: 16 buchi nei quattro giorni con le soglie
+storiche, 15 con quelle della finestra, e la differenza sta tutta su
+`trades/SOL`. Il buco mancante dura 102,5 s e cade fra 80,80 s (soglia storica)
+e 109,69 s (soglia della finestra):
+
+```
+Running as unit: run-rdac8e34bdee748acbbb477e9854686a3.scope; invocation ID: 8780a40d2d344c1aa9b6f82334f527de
+
+soglia 80.8s -> buchi su trades/SOL nei 4 giorni: 2
+   2026-08-15 08:04:27 -> 2026-08-15 08:06:35  127.6s   fuori dalla finestra
+   2026-08-15 08:06:35 -> 2026-08-15 08:08:17  102.5s   fuori dalla finestra
+
+soglia 109.69s -> buchi su trades/SOL nei 4 giorni: 1
+   2026-08-15 08:04:27 -> 2026-08-15 08:06:35  127.6s   fuori dalla finestra
+```
+
+<a name="runner"></a>
+## I due runner della suite, sullo stesso codice
+
+```
+.[duckdb] con un cursore per flusso: 1000 + 4000 = 5000 righe su 5000
+.
+[duckdb] primo blocco 1000 righe, dopo una seconda execute sulla stessa connessione 0 righe (attese 1000 su 5000 totali)
+.[audit] controllo negativo: buono [], cattivo [(2, 'fetchmany')]
+.
+[audit] 49 moduli passati al setaccio in costs, catalog, collector, backtest, tools; fetch staccate dalla propria execute: {'backtest/feed.py': [(131, 'fetchmany'), (174, 'fetchmany')]}
+.......................................................uuuuuuuuuuu.......uuuuuuuuuuuuuuuu......uuuu....
+322 passed, 1733 subtests passed in 228.97s (0:03:48)
+
+real	3m49.390s
+user	3m20.876s
+sys	0m33.630s
+```
+
+```
+[duckdb] primo blocco 1000 righe, dopo una seconda execute sulla stessa connessione 0 righe (attese 1000 su 5000 totali)
+[audit] controllo negativo: buono [], cattivo [(2, 'fetchmany')]
+
+[audit] 49 moduli passati al setaccio in costs, catalog, collector, backtest, tools; fetch staccate dalla propria execute: {'backtest/feed.py': [(131, 'fetchmany'), (174, 'fetchmany')]}
+
+real	2m29.199s
+user	2m13.799s
+sys	0m20.638s
+```
+
+`pytest` 9.1.1 conta i subtest da solo: `pytest-subtests` non e' installato
+(`pip list` nel virtualenv del progetto elenca solo pytest, iniconfig,
+packaging, pluggy e Pygments). `unittest` esegue gli stessi 322 test e non
+riporta i subtest.
+
+<a name="ambiente"></a>
+## Dov'era `pytest`: cronologia dell'ambiente
+
+Quello che si dimostra dai timestamp:
+
+```
+.venv                       creato 2026-08-02 07:50:03, mai ricreato (birth intatta)
+.venv/.../site-packages     ultima modifica 2026-08-14 14:40:18 (installazione di duckdb 1.5.5)
+pytest*.dist-info           MAI presente in .venv
+disco                       179 GB liberi su 192 (7% usato) — nessun evento di spazio
+apt/dpkg su python3         ultimo cambiamento 2026-07-16; gli aggiornamenti
+                            automatici del 19-21 agosto sono solo kernel e linux-tools
+/tmp/pytestenv              creato 2026-08-19 23:27:44 — python 3.12.3,
+                            --system-site-packages, pytest 9.1.1, duckdb 1.5.5, niente pyarrow
+/tmp/pytest311              creato 2026-08-20 09:16:32 — python 3.11.15,
+                            pytest 9.1.1 e nient'altro (niente duckdb)
+tests/__pycache__/*.cpython-312-pytest-9.1.1.pyc   scritti 2026-08-19 23:28:07
+```
+
+Ventitre secondi separano la creazione di `/tmp/pytestenv` dai `.pyc` compilati
+da CPython 3.12: nella tornata precedente almeno una esecuzione della suite e'
+girata su un interprete diverso da quello del progetto (3.11.15). I `.pyc` 3.12
+coprono i test di `catalog/` e `costs/` ma NON quelli di `backtest/`, che a
+quell'ora non esistevano ancora.
+
+Quello che NON si dimostra: quale dei due ambienti temporanei abbia prodotto il
+`321 passed, 1733 subtests` finale. I `.pyc` 3.11 sono stati riscritti
+dall'esecuzione di oggi e non c'e' cronologia di shell. `/tmp/pytest311` da
+solo non puo' aver eseguito la suite — non ha duckdb — quindi, se e' stato lui,
+e' stato con un `PYTHONPATH` preso in prestito dal virtualenv del progetto.
