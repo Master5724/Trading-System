@@ -52,6 +52,21 @@ def compare_sample(con, data_dir: str, coin: str, date: str,
     un errore di segno o di unita', che e' cio' che questa verifica puo'
     davvero trovare.
 
+    **`max_trades` e' un tetto che spesso morde, e va letto sapendolo.** Su BTC
+    un giorno vale ~140.000 trade contro un tetto di 20.000: il campione sono i
+    PRIMI ventimila della giornata in ordine di arrivo, cioe' le prime ore, non
+    una giornata intera ne' un campione sparso su tutte le ore. Per un errore
+    di segno o di unita' e' indifferente; per una mediana di slippage no,
+    perche' spread e profondita' cambiano con l'ora.
+
+    Il risultato riporta quindi `cap_trades` e **`ore_coperte`**, e non un
+    booleano "tetto raggiunto": il conteggio delle righe che escono dal join
+    non coincide col tetto (l'ASOF join scarta i trade senza uno snapshot
+    precedente), quindi un booleano dedotto da li' direbbe "no" anche quando il
+    tetto ha morso. Le ore coperte sono il numero che risponde alla domanda
+    vera: su BTC il 2026-08-16 il campione copre **8,94 ore su 24**, e una
+    mediana su un terzo di giornata va letta come tale.
+
     Il join e' `t.ts_local_ns > b.ts_local_ns`, disuguaglianza STRETTA: usare
     il book contemporaneo o successivo al trade sarebbe look-ahead, cioe'
     esattamente l'errore che rende un backtest bello e falso.
@@ -81,10 +96,12 @@ def compare_sample(con, data_dir: str, coin: str, date: str,
     n_side_coherent = 0
     n_insufficient = 0
     err_bps: list[float] = []
+    ts: list[int] = []
     real_bps: list[float] = []
     pred_bps: list[float] = []
     age_ms: list[float] = []
     for side_raw, px, sz, t_ns, b_ns, raw in rows:
+        ts.append(t_ns)
         side = Side.BUY if side_raw == "B" else Side.SELL
         book = L2Book.try_from_payload(json.loads(raw), b_ns)
         if book is None:
@@ -114,6 +131,8 @@ def compare_sample(con, data_dir: str, coin: str, date: str,
         "coin": coin,
         "date": date,
         "n_trades": n,
+        "cap_trades": int(max_trades),
+        "ore_coperte": ((max(ts) - min(ts)) / 3.6e12) if ts else None,
         "frac_side_coerente": (n_side_coherent / n) if n else None,
         "n_size_oltre_book": n_insufficient,
         "slippage_reale_bps_p50": med(real_bps),

@@ -26,6 +26,18 @@ Test (solo stdlib, non serve installare niente):
 python -m unittest discover -s tests -v
 ```
 
+Con `pytest` installato nello stesso virtualenv si ottiene lo stesso esito piu'
+il conteggio dei subtest, che `unittest` non riporta:
+
+```bash
+python -m pytest -q -s
+```
+
+Vale la pena dirlo perche' l'ambiguita' e' gia' costata un errore in un report:
+i due comandi vanno lanciati **col python del virtualenv del progetto**
+(`.venv/bin/python`), non con uno creato al volo altrove. Un interprete diverso
+esegue codice diverso da quello che gira in produzione.
+
 Parti su `network: testnet`. Passa a `mainnet` solo quando hai 24h di dati puliti
 e il watchdog non ha loggato nulla di anomalo.
 
@@ -319,8 +331,28 @@ al giorno, dominati da `l2Book`. Verifica sui tuoi dati dopo 24h e dimensiona
 il disco su 6 mesi, non su una settimana. Se stringe, la leva e' `l2_depth`,
 non il numero di coin.
 
+## Il backtester
+
+`backtest/` e' il motore event-driven che legge questi stessi Parquet. Sola
+lettura sulla directory dati, un ordine di eventi per timestamp locale, e il
+modello di costo importato da `costs/` senza duplicarne una riga.
+
+```
+.venv/bin/python -m backtest --data-dir /home/ubuntu/hl-data/mainnet \
+    --coins BTC --from 2026-08-16T00:00 --to 2026-08-17T00:00 \
+    --strategy random --out /tmp/bt
+```
+
+La strategia di default e' `flat` e non manda ordini: le altre (`random`,
+`always_long`, `maker`) sono **fittizie**, servono a misurare il motore. Il
+riepilogo stampa il residuo di conservazione: se non e' zero al centesimo, il
+resto dei numeri non va letto. Le regole che il motore non negozia — niente
+fill inventati, maker solo per attraversamento, niente look-ahead, buchi non
+attraversati — stanno nelle docstring di `backtest/engine.py` e
+`backtest/fills.py`.
+
 ## Prossimo passo
 
 Non scrivere strategie. Dopo 3-4 settimane di dati:
 1. notebook di sanity check — gap, distribuzione degli spread, funding per coin
-2. scheletro del backtester event-driven che legge questi stessi Parquet
+2. client di esecuzione su testnet, con lo stesso motore usato dal backtest

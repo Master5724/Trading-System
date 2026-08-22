@@ -95,6 +95,41 @@ def glob_partition(data_dir: str, channel: str, coin: str) -> str:
     return os.path.join(data_dir, channel, coin, "date=*", "hour=*", "*.parquet")
 
 
+def globs_for_dates(data_dir: str, channel: str, coin: str,
+                    dates: list[str]) -> list[str]:
+    """Un glob per ogni directory `date=` fra quelle chieste che esiste davvero.
+
+    Le directory inesistenti si scartano qui: `read_parquet` su un glob senza
+    file solleva, e un giorno mancante ai bordi di una finestra e' normale — il
+    primo giorno di raccolta, o domani. Chi legge una finestra deve ottenere
+    zero righe da un giorno che non c'e', non un errore.
+    """
+    return [
+        os.path.join(data_dir, channel, coin, f"date={d}", "hour=*", "*.parquet")
+        for d in dates
+        if os.path.isdir(os.path.join(data_dir, channel, coin, f"date={d}"))
+    ]
+
+
+def read_many(globs: list[str], columns: str, **opts) -> str:
+    """`UNION ALL` di `read_parquet` sui glob dati, proiettato su `columns`.
+
+    Serve a restringere una lettura ad alcuni giorni tenendo UNA sola
+    sotto-query: le funzioni che ci lavorano sopra (l'ordinamento di
+    `sanity`, la dedup di `trades`) usano finestre analitiche che devono
+    vedere l'intera partizione insieme. Unire dopo la finestra darebbe deltas
+    nulli a ogni mezzanotte, cioe' esattamente i buchi che si stanno cercando.
+    """
+    if not globs:
+        raise ValueError(
+            "read_many senza glob: il caso 'nessun giorno utile' ha bisogno di "
+            "una sotto-query TIPIZZATA, e i tipi li conosce chi chiama"
+        )
+    return "(" + " UNION ALL ".join(
+        f"SELECT {columns} FROM {read(g, **opts)}" for g in globs
+    ) + ")"
+
+
 def sql_str(value: str) -> str:
     """Letterale SQL. I percorsi arrivano dalla CLI, non da input non fidato,
     ma un apice in un nome di directory non deve produrre SQL rotto."""

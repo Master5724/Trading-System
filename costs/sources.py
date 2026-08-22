@@ -100,6 +100,8 @@ def _day_glob(data_dir: str, channel: str, coin: str, date: str) -> str:
 def unreliable_hours(con, data_dir: str, partitions: list[tuple[str, str]],
                      p99_multiple: float = derivedgaps.DEFAULT_P99_MULTIPLE,
                      min_gap_s: float = derivedgaps.DEFAULT_MIN_GAP_S,
+                     dates: list[str] | None = None,
+                     thresholds_out: list | None = None,
                      ) -> dict[tuple[str, str], frozenset[int]]:
     """Ore (indice orario UTC) attraversate da un buco derivato dai dati.
 
@@ -113,10 +115,27 @@ def unreliable_hours(con, data_dir: str, partitions: list[tuple[str, str]],
     11: l'estremo finale e' incluso. Marcare in eccesso e' l'errore giusto —
     costa un'ora di dati, mentre l'errore opposto costa una statistica che
     sembra sana.
+
+    `dates` viene passato a `sanity.build_ordered` e limita la lettura a quei
+    giorni. Il default resta l'intero storico, e con esso la soglia derivata dal
+    p99. Quando invece si legge una finestra, la soglia diventa il PAVIMENTO
+    FISSO `min_gap_s`: il p99 di una finestra si calcola sulle stesse righe di
+    cui deve giudicare la completezza, quindi sale proprio quando la raccolta e'
+    andata peggio e maschera la degradazione che dovrebbe rilevare (misurato:
+    `trades/SOL` 82,5 s sullo storico, 109,7 s su tre giorni). Le soglie usate
+    escono da `thresholds_out` con `basis = pavimento_fisso`.
+
+    `thresholds_out`, se passata, riceve le soglie effettivamente usate. Esiste
+    perche' una soglia e' un numero che cambia il risultato senza comparire da
+    nessuna parte: chi restringe i giorni deve poterla leggere, non dedurla.
     """
-    sanity.build_ordered(con, data_dir, partitions)
-    derivedgaps.build_thresholds(con, p99_multiple=p99_multiple,
-                                 min_gap_s=min_gap_s)
+    sanity.build_ordered(con, data_dir, partitions, dates)
+    soglie = derivedgaps.build_thresholds(
+        con, p99_multiple=p99_multiple, min_gap_s=min_gap_s,
+        fixed_s=None if dates is None else min_gap_s,
+    )
+    if thresholds_out is not None:
+        thresholds_out.extend(soglie)
     derivedgaps.build(con)
     out: dict[tuple[str, str], set[int]] = {p: set() for p in partitions}
     rows = con.execute(

@@ -83,6 +83,9 @@ MIN_INTERVALS_FOR_P99 = 100
 BASIS_P99 = "p99"
 BASIS_FLOOR = "minimo_assoluto"
 BASIS_TOO_FEW = "pochi_intervalli"
+# Soglia imposta dall'esterno, uguale per tutte le partizioni: il p99 della
+# finestra non e' un riferimento indipendente da cio' che deve giudicare.
+BASIS_FIXED = "pavimento_fisso"
 
 NS_PER_S = 1_000_000_000
 
@@ -131,11 +134,24 @@ def build_thresholds(
     con,
     p99_multiple: float = DEFAULT_P99_MULTIPLE,
     min_gap_s: float = DEFAULT_MIN_GAP_S,
+    fixed_s: float | None = None,
 ) -> list[dict]:
     """Materializza `gap_thresholds`, una riga per partizione di stream.
 
     Legge `ts_ordered` (gia' costruita da `sanity.build_ordered`): le righe
     nell'ordine di scrittura, con il `delta_ns` dal messaggio precedente.
+
+    `fixed_s` scavalca il p99 e impone la stessa soglia a ogni partizione.
+    Serve quando `ts_ordered` contiene solo i giorni di una finestra invece
+    dell'intero storico, e la ragione e' che il p99 di una finestra e' calcolato
+    sulle stesse righe di cui deve giudicare la completezza: se in quella
+    finestra la raccolta ha singhiozzato, gli intervalli sono piu' lunghi, il
+    p99 sale, la soglia sale con lui e il singhiozzo smette di superarla. La
+    soglia derivata dalla finestra MASCHERA proprio la degradazione che dovrebbe
+    rilevare, e lo fa in silenzio: sui dati veri la soglia di `trades/SOL` passa
+    da 82,5 s (storico) a 109,7 s (finestra di 3 giorni). Un valore fisso non ha
+    questa retroazione — al costo di marcare qualche ora in piu' su una coin
+    lenta, che e' il verso giusto in cui sbagliare.
 
     I canali di backfill non compaiono: sono dump REST scritti una volta per
     riconnessione, non hanno cadenza, e la distanza fra due dump non e' un buco
@@ -147,6 +163,21 @@ def build_thresholds(
     sarebbero durate negative. `sanity.monotonicity` li elenca gia' per esteso.
     """
     backfill = ", ".join(repr(c) for c in sorted(BACKFILL_CHANNELS))
+    if fixed_s is None:
+        thr = (f"CASE WHEN n_intervals < {int(MIN_INTERVALS_FOR_P99)}"
+               f"      THEN {float(min_gap_s)}"
+               f"      ELSE greatest(p99_s * {float(p99_multiple)},"
+               f"                    {float(min_gap_s)}) END")
+        basis = (f"CASE WHEN n_intervals < {int(MIN_INTERVALS_FOR_P99)}"
+                 f"          THEN {sql_str(BASIS_TOO_FEW)}"
+                 f"     WHEN p99_s * {float(p99_multiple)} >= {float(min_gap_s)}"
+                 f"          THEN {sql_str(BASIS_P99)}"
+                 f"     ELSE {sql_str(BASIS_FLOOR)} END")
+    else:
+        # Il p99 resta nella tabella e nel report: serve a vedere di quanto la
+        # finestra si discosta dallo storico, che e' un'informazione, non una
+        # soglia.
+        thr, basis = f"{float(fixed_s)}", sql_str(BASIS_FIXED)
     con.execute(
         f"""
         CREATE OR REPLACE TABLE gap_thresholds AS
@@ -154,15 +185,8 @@ def build_thresholds(
                CAST(threshold_s * {NS_PER_S} AS BIGINT) AS threshold_ns
         FROM (
             SELECT channel, coin, n_intervals, p99_s,
-                   CASE WHEN n_intervals < {int(MIN_INTERVALS_FOR_P99)}
-                        THEN {float(min_gap_s)}
-                        ELSE greatest(p99_s * {float(p99_multiple)},
-                                      {float(min_gap_s)}) END AS threshold_s,
-                   CASE WHEN n_intervals < {int(MIN_INTERVALS_FOR_P99)}
-                            THEN {sql_str(BASIS_TOO_FEW)}
-                        WHEN p99_s * {float(p99_multiple)} >= {float(min_gap_s)}
-                            THEN {sql_str(BASIS_P99)}
-                        ELSE {sql_str(BASIS_FLOOR)} END AS basis
+                   {thr} AS threshold_s,
+                   {basis} AS basis
             FROM (
                 SELECT channel, coin,
                        count(*)                              AS n_intervals,

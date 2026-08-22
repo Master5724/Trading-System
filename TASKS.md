@@ -36,6 +36,40 @@ Prima di ogni task: `git checkout -b task-N`. Alla fine, leggi il diff.
 
 **Rivedi tu:** la definizione di "ora incompleta". È una scelta tua, non sua.
 
+**Requisito trasversale — ogni lettura di dati che alimenta un risultato deve
+avere un conteggio atteso con cui confrontarsi.** Vale per `catalog/`,
+`costs/`, `backtest/` e per tutto ciò che verrà dopo, non solo per il modulo in
+cui è stato scritto.
+
+Il motivo è un difetto vero, trovato nel Task 3: il feed del backtester
+consegnava 20.000 trade su 108.168 perché un cursore DuckDB veniva invalidato
+da una query successiva. Nessuna eccezione, nessun log, un risultato calcolato
+su un quinto dei dati e perfettamente plausibile. La correzione ha eliminato
+*quella* causa, e un test verifica che nessun altro modulo tenga aperto un
+result set — ma quel test dimostra solo che nessuno usa quel meccanismo. Non
+dimostra che ogni query restituisca le righe che dovrebbe: un `WHERE`
+sbagliato, un glob che non copre un giorno, una `date=` che non esiste danno
+tutti un conteggio basso e credibile.
+
+L'unica difesa che non dipende dall'aver previsto la causa è **confrontare il
+numero di righe lette con un numero atteso calcolato per un'altra strada**, e
+fermarsi se non torna — come fa `backtest.feed._verifica`, che confronta le
+righe consegnate con quelle contate sulla finestra. Oggi quel confronto esiste
+solo lì. Dove non esiste, un conteggio va almeno **riportato**: un numero che
+nessuno guarda non è un controllo.
+
+**Requisito trasversale — il numero di ripetizioni di un test statistico si
+fissa PRIMA di guardare il risultato.** Se lo si estende dopo averlo visto, il
+report deve riportare tre cose insieme: il t del campione iniziale, il t del
+campione finale, e la differenza fra i due blocchi (il campione aggiunto,
+misurato da solo). Altrimenti "ho allargato il campione" e "ho continuato a
+tirare finché il numero non mi è piaciuto" producono lo stesso report.
+
+Anche questo nasce da un caso vero del Task 3: la media degli scarti della
+strategia casuale usciva a +2,09 errori standard su 20 ripetizioni e a +0,90 su
+100. L'estensione era legittima — stessa famiglia di semi, nessuna selezione —
+ma dal solo numero finale non si distingue dal caso in cui non lo fosse.
+
 ---
 
 ## Task 2 — Modello di costo

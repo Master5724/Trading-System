@@ -185,7 +185,8 @@ def main(argv: list[str] | None = None) -> int:
             lines += [
                 f"",
                 f"  {coin} — modello contro trade reali del {v['date']} "
-                f"({v['n_trades']:,} trade):",
+                f"({v['n_trades']:,} trade su un tetto di {v['cap_trades']:,}, "
+                f"che coprono {v['ore_coperte'] or 0:.2f} ore delle 24):",
                 f"      lato coerente col book precedente: "
                 f"{100 * (v['frac_side_coerente'] or 0):.1f} %",
                 f"      slippage mediano reale {v['slippage_reale_bps_p50']:.3f} bps "
