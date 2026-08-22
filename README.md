@@ -329,6 +329,34 @@ ricalcola sui giorni letti (da non usare su una finestra: il p99 di una finestra
 degradata sale e maschera la degradazione) e `--soglie fisse` impone `--gap-min-s`
 a ogni partizione.
 
+**Il file copre 17 partizioni, il backtest ne chiede 12.** `gap_thresholds.json`
+ha una riga per ogni partizione di stream che il collector scrive — quattro coin
+per `activeAssetCtx`, `candle`, `l2Book`, `trades`, piu' `allMids/_global`, che
+e' un canale unico e non per coin: 4 x 4 + 1 = 17. Il backtest ne chiede 12
+(`backtest.feed.REQUIRED_CHANNELS` x 4 coin) e le altre cinque restano nel file
+senza essere usate. `candle` e `allMids` esistono nei dati dal primo giorno di
+raccolta e per venti giorni nessuna analisi di integrita' li ha guardati: non
+sono canali nuovi, sono canali che nessuno controllava.
+
+**Il controllo di deriva, ogni giorno, dentro il report.** Una soglia congelata
+non si accorge da sola che il regime e' cambiato. `catalog.deriva` non ricalcola
+niente — mette accanto due numeri per partizione: il p99 congelato e il p99 del
+solo ultimo giorno intero, piu' quanti intervalli di quel giorno superano la
+soglia in uso.
+
+```bash
+.venv/bin/python -m catalog.deriva --data-dir /home/ubuntu/hl-data/mainnet
+```
+
+Legge due giorni, non uno: il `delta_ns` della prima riga di un giorno si misura
+sull'ultima riga del giorno prima, e senza quel margine un'interruzione a cavallo
+della mezzanotte non esiste per nessuno. Costa fra 17,9 s (cache calda) e 35,6 s
+(fredda) e 217-226 MB di picco su 17 partizioni. Il picco lo fissa
+`--memory-limit` (128MB di default), non la mole dei dati: a 512MB lo stesso
+comando fa 569 MB di picco e produce risultati identici, perché cambia solo
+quanto DuckDB versa su disco. Gira ogni notte dentro `report24_v2.sh`, che
+stampa anche la provenienza delle soglie e quante partizioni sono coperte.
+
 **`low_volume` si alza solo sui canali a cadenza fissa.** `l2Book`,
 `activeAssetCtx` e `allMids` arrivano a intervalli regolari qualunque cosa
 faccia il mercato: un'ora sotto il 90% della mediana e' un'anomalia di

@@ -70,34 +70,66 @@ strategia casuale usciva a +2,09 errori standard su 20 ripetizioni e a +0,90 su
 100. L'estensione era legittima — stessa famiglia di semi, nessuna selezione —
 ma dal solo numero finale non si distingue dal caso in cui non lo fosse.
 
-**Scadenza — il percorso che legge tutto lo storico sfonda i 2 GB
-intorno al 2 settembre 2026.** Non è una previsione generica: è una retta con
-due misure sopra.
+**Scadenza — il percorso che legge tutto lo storico arriva al 90% dei 2 GB
+intorno al 27 dicembre 2026.** La data precedente scritta qui (2026-09-02) era
+sbagliata di quasi quattro mesi, e lo era perché il modello sotto era sbagliato:
+non "76 byte per riga", ma **4,8**. Il profilo che lo dimostra è sotto.
 
-Il costo cresce col numero di righe in `ts_ordered`, che è lineare nei giorni di
-raccolta. Misurato il 2026-08-22 su 21 giorni e 17 partizioni (`python -m
-catalog.soglie`, l'unico comando che oggi legge ancora l'intero storico):
-19.223.057 righe, picco 1.393,3 MB, cioè **76,0 byte per riga** e **915.385
-righe al giorno**. Sono 66,3 MB al giorno: il tetto di 2 GB imposto a ogni job
-(`systemd-run --user --scope -p MemoryMax=2G`) arriva a **~31 giorni di
-storico**, e la raccolta è cominciata il 2026-08-02 → **2026-09-02**.
+Misurato il 2026-08-22, 17 partizioni, 19.565.145 righe, `memory_limit=1GB`
+(default di `sources.connect`), una fase per riga:
 
-Sul percorso più stretto, i 3 canali × 4 coin che il backtest usava, la misura è
-792,4 MB su 20 giorni e 13.621.523 righe: 58,2 byte per riga, 681.076 righe al
-giorno, 39,6 MB al giorno, **~52 giorni → 2026-09-23**.
+```
+RSS prima di connettersi                                        52,8 MB
+connect                                                         56,5 MB
+build_ordered  1/17 activeAssetCtx/BTC   (1.718.388 righe)    1.201,5 MB
+build_ordered  4/17 activeAssetCtx/SOL   (6.873.502 righe)    1.210,6 MB
+build_ordered 14/17 trades/BTC          (15.705.430 righe)    1.281,8 MB
+build_ordered 17/17 trades/SOL          (19.565.145 righe)    1.281,8 MB
+build_thresholds (p99 per partizione)                         1.286,7 MB
+```
 
-Le due date sono stime lineari attraverso l'origine: trascurano la parte fissa
-del picco (interprete e DuckDB), quindi sbagliano **in anticipo**, cioè il muro
-arriverà un po' più tardi. Non sbagliano di verso.
+**Il picco lo fa `sanity.build_ordered`, e lo fa sulla PRIMA partizione.** Dopo
+1,7 milioni di righe su 19,6 il processo è già a 1.201,5 MB: quel numero non è la
+mole dei dati, è il buffer pool di DuckDB che si riempie fino al tetto
+configurato. Le altre sedici partizioni aggiungono **85,2 MB in tutto** mentre le
+righe si moltiplicano per undici — **4,8 byte per riga**, non 76. `build_thresholds`,
+che è la fase che *sembra* costosa perché calcola un p99 su venti milioni di
+righe, ne aggiunge 5. Ciò che cresce davvero con lo storico è lo **spill su
+disco**: 1.233,7 MB oggi, ~58 MB al giorno, su 179 GB liberi.
 
-Cosa fare prima di quella data — la scelta è del Task che ci arriva, non di
-questa nota:
-- leggere lo storico a blocchi di giorni e aggregare, invece di materializzare
-  `ts_ordered` intera (il p99 per partizione si può calcolare a passate);
-- oppure fermare la lettura completa e derivare le soglie da una finestra di
-  storico dichiarata a lunghezza fissa (per esempio gli ultimi 30 giorni), che è
-  già coerente con `gap_thresholds.json`: il file dichiara lo storico su cui è
-  stato calcolato, e non deve essere per forza *tutto*.
+Con 4,8 byte per riga e 915.385 righe al giorno sono **4,39 MB al giorno**. Dai
+1.286,7 MB di oggi al 90% del tetto (1.843,2 MB) restano 556,5 MB, cioè **127
+giorni → 2026-12-27**. Al tetto nudo di 2.048 MB sarebbero 173 giorni
+(2027-02-11), ma la data che conta è quella col margine: è lì che si deve
+intervenire, non dove il kernel uccide il job.
+
+L'estrapolazione è una retta su due punti presi *dentro la stessa esecuzione*
+(prima partizione e ultima), e assume che il tetto di DuckDB resti 1GB e che lo
+spill continui a funzionare. Se una fase futura non potesse versare su disco, il
+modello salterebbe: è l'assunzione da rivedere per prima.
+
+Cosa fare prima di quella data — **due strade misurate, la scelta è del Task che
+ci arriva**:
+
+| | tetto DuckDB | tempo | picco RSS | spill su disco |
+|---|---|---|---|---|
+| com'è oggi | 1GB | 582,5 s | 1.286,7 MB | 1.233,7 MB |
+| 1. tetto più basso | 256MB | 614,9 s | 577,1 MB | 2.021,6 MB |
+| 2. una partizione per volta | 256MB | 577,3 s | 505,8 MB | 0 |
+
+1. **Abbassare il tetto** di `sources.connect` da 1GB a 256MB: −55% di picco,
+   +32,4 s (+5,6%), e lo spill su disco cresce del 64%. Costa una riga.
+2. **Una partizione per volta**, connessione nuova ogni volta, soglie accumulate:
+   −61% di picco, **−5,2 s** (il tempo non peggiora) e spill **zero**, perché una
+   singola partizione ci sta nel tetto. Costa una modifica a `catalog.soglie` e la
+   verifica di chi legge `ts_ordered` dopo — `sanity.monotonicity`,
+   `interarrival`, `exch_ts_zero`, `derivedgaps.build` aggregano tutte per
+   partizione, ma quella verifica qui non è stata fatta.
+
+Le tre esecuzioni non danno soglie identiche al bit: fra la prima e l'ultima il
+collector ha aggiunto righe (1.718.387 → 1.719.561 intervalli su
+`activeAssetCtx/BTC`) e la soglia più mossa cambia di 0,036 s su 82,4 —
+**0,04%**. È la stessa deriva per cui le soglie sono congelate.
 
 Il segnale che il muro è vicino non è un rallentamento: è un job ucciso dal
 kernel. Il tetto esiste perché un esaurimento di memoria su questa macchina ha
