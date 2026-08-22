@@ -83,6 +83,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="pavimento assoluto della soglia di buco, in secondi "
                         f"(default {derivedgaps.DEFAULT_MIN_GAP_S:g}): sotto, un "
                         "silenzio non e' distinguibile da un canale tranquillo")
+    p.add_argument("--soglie", default=derivedgaps.SOGLIE_CONGELATE,
+                   choices=list(derivedgaps.SOGLIE_MODI),
+                   help="origine delle soglie di buco. Default: il file "
+                        "versionato gap_thresholds.json, cosi' che il report e "
+                        "il backtest giudichino gli stessi dati con gli stessi "
+                        "numeri. `misurate` le ricalcola su questo storico ed e' "
+                        "cio' che fa `python -m catalog.soglie`; con --gap-* "
+                        "diversi dai default e' l'unica modalita' sensata.")
     p.add_argument("--now-ms", type=int, default=None,
                    help="istante di riferimento per chiudere le finestre di gap "
                         "ancora aperte (default: adesso). Serve ai test.")
@@ -182,10 +190,17 @@ def run(args: argparse.Namespace) -> dict:
     # appena materializzata da `build_ordered`. L'ordine dei tre passi non e'
     # negoziabile — la soglia si calcola sugli intervalli grezzi, il rilevamento
     # la usa, e l'esclusione statistica usa lo stesso criterio del rilevamento.
+    congelate = (
+        derivedgaps.frozen_rows(derivedgaps.load_frozen(), partitions)
+        if args.soglie == derivedgaps.SOGLIE_CONGELATE else None
+    )
     res["gap_thresholds"] = step(
         "soglie di buco",
-        lambda: derivedgaps.build_thresholds(con, args.gap_p99_multiple,
-                                             args.gap_min_s),
+        lambda: derivedgaps.build_thresholds(
+            con, args.gap_p99_multiple, args.gap_min_s,
+            fixed_s=(args.gap_min_s if args.soglie == derivedgaps.SOGLIE_FISSE
+                     else None),
+            frozen=congelate),
     )
     n_derived = step("buchi derivati", lambda: derivedgaps.build(con))
     res["derived_gaps"] = derivedgaps.stats(con)
@@ -193,9 +208,16 @@ def run(args: argparse.Namespace) -> dict:
         derivedgaps.fetch(con), windows, args.max_rows
     )
     res["derived_gap_meta"] = {
+        "soglie": args.soglie,
+        # Con le soglie congelate `p99_multiple` e `min_gap_s` non hanno
+        # governato niente: restano per non cambiare la forma del report, ma il
+        # numero che ha deciso e' quello del file, e la sua data e' qui sotto.
         "p99_multiple": args.gap_p99_multiple,
         "min_gap_s": args.gap_min_s,
         "min_intervals_for_p99": derivedgaps.MIN_INTERVALS_FOR_P99,
+        "soglie_calcolate_il": (
+            derivedgaps.load_frozen()["calcolate_il"]
+            if args.soglie == derivedgaps.SOGLIE_CONGELATE else None),
         "n_derived": n_derived,
     }
 

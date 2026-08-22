@@ -75,6 +75,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--equity", type=float, default=10_000.0)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--max-book-age-s", type=float, default=30.0)
+    p.add_argument("--soglie", default=sources.SOGLIE_CONGELATE,
+                   choices=list(sources.SOGLIE_MODI),
+                   help="origine delle soglie di buco (default: dal file "
+                        "versionato gap_thresholds.json)")
     p.add_argument("--out", default="")
     p.add_argument("--temp-dir", default="/tmp/backtest-duckdb")
     # 512MB e non 1GB: misurato, il picco del processo insegue il tetto dato a
@@ -98,7 +102,8 @@ def main(argv: list[str] | None = None) -> int:
     # riepilogo del task non deve contenere sequenze di controllo.
     con.execute("SET enable_progress_bar = false")
     giorni = dates_between(args.start, args.end)
-    funding, blocked, fstats = context(con, args.data_dir, coins, giorni)
+    funding, blocked, fstats = context(con, args.data_dir, coins, giorni,
+                                       soglie=args.soglie)
     t_ctx = time.monotonic() - t0
     # `ru_maxrss` e' un massimo storico, non l'occupazione istantanea: leggerlo
     # a fine di ogni fase dice QUALE fase ha fatto il picco, che e' l'unica
@@ -149,12 +154,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         w(f"{coin}: ore bloccate DENTRO la finestra {len(blocked_in_window)} "
           f"{blocked_in_window}\n")
-        # La soglia decide cosa e' un buco e cosa no. Leggendo una finestra e'
-        # il pavimento fisso di 30 s per ogni partizione (`pavimento_fisso`):
-        # il p99 della finestra salirebbe proprio quando la raccolta e' andata
-        # peggio. Resta stampata perche' e' un numero che cambia il risultato,
-        # e su una coin lenta il pavimento costa ore marcate: su SOL, 11 delle
-        # 24 ore dell'esecuzione A.
+        # La soglia decide cosa e' un buco e cosa no, e di default arriva dal
+        # file congelato: non dipende dalla finestra che sta giudicando, e non
+        # cambia da sola quando lo storico cresce. Resta stampata con la data di
+        # calcolo perche' congelata non vuol dire giusta per sempre — se il
+        # regime di una coin cambia, e' `python -m catalog.soglie` (senza
+        # `--scrivi`) a dire di quanto la soglia si sta allontanando.
         w(f"{coin}: soglie di buco (s) {s['soglie']}\n")
 
     w("\n=== BARRE E ORDINI ===\n")

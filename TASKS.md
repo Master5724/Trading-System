@@ -70,6 +70,39 @@ strategia casuale usciva a +2,09 errori standard su 20 ripetizioni e a +0,90 su
 100. L'estensione era legittima — stessa famiglia di semi, nessuna selezione —
 ma dal solo numero finale non si distingue dal caso in cui non lo fosse.
 
+**Scadenza — il percorso che legge tutto lo storico sfonda i 2 GB
+intorno al 2 settembre 2026.** Non è una previsione generica: è una retta con
+due misure sopra.
+
+Il costo cresce col numero di righe in `ts_ordered`, che è lineare nei giorni di
+raccolta. Misurato il 2026-08-22 su 21 giorni e 17 partizioni (`python -m
+catalog.soglie`, l'unico comando che oggi legge ancora l'intero storico):
+19.223.057 righe, picco 1.393,3 MB, cioè **76,0 byte per riga** e **915.385
+righe al giorno**. Sono 66,3 MB al giorno: il tetto di 2 GB imposto a ogni job
+(`systemd-run --user --scope -p MemoryMax=2G`) arriva a **~31 giorni di
+storico**, e la raccolta è cominciata il 2026-08-02 → **2026-09-02**.
+
+Sul percorso più stretto, i 3 canali × 4 coin che il backtest usava, la misura è
+792,4 MB su 20 giorni e 13.621.523 righe: 58,2 byte per riga, 681.076 righe al
+giorno, 39,6 MB al giorno, **~52 giorni → 2026-09-23**.
+
+Le due date sono stime lineari attraverso l'origine: trascurano la parte fissa
+del picco (interprete e DuckDB), quindi sbagliano **in anticipo**, cioè il muro
+arriverà un po' più tardi. Non sbagliano di verso.
+
+Cosa fare prima di quella data — la scelta è del Task che ci arriva, non di
+questa nota:
+- leggere lo storico a blocchi di giorni e aggregare, invece di materializzare
+  `ts_ordered` intera (il p99 per partizione si può calcolare a passate);
+- oppure fermare la lettura completa e derivare le soglie da una finestra di
+  storico dichiarata a lunghezza fissa (per esempio gli ultimi 30 giorni), che è
+  già coerente con `gap_thresholds.json`: il file dichiara lo storico su cui è
+  stato calcolato, e non deve essere per forza *tutto*.
+
+Il segnale che il muro è vicino non è un rallentamento: è un job ucciso dal
+kernel. Il tetto esiste perché un esaurimento di memoria su questa macchina ha
+già congelato il collector per 82 minuti, e quel tetto va lasciato dov'è.
+
 ---
 
 ## Task 2 — Modello di costo

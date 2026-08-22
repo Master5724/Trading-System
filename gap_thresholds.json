@@ -1,0 +1,155 @@
+{
+  "versione": 1,
+  "calcolate_il": "2026-08-22T10:45:14Z",
+  "storico": {
+    "data_dir": "/home/ubuntu/hl-data/mainnet",
+    "primo_giorno": "2026-08-02",
+    "ultimo_giorno": "2026-08-22",
+    "n_giorni": 21,
+    "n_righe_ts_ordered": 19223057,
+    "p99_multiple": 5.0,
+    "min_gap_s": 30.0,
+    "min_intervals_for_p99": 100,
+    "secondi_di_calcolo": 592.4,
+    "picco_rss_mb": 1393.3
+  },
+  "comando": "python -m catalog.soglie --data-dir /home/ubuntu/hl-data/mainnet --gap-p99-multiple 5 --gap-min-s 30 --scrivi",
+  "soglie": [
+    {
+      "channel": "activeAssetCtx",
+      "coin": "BTC",
+      "n_intervals": 1692604,
+      "p99_s": 1.406125,
+      "threshold_s": 30.0,
+      "basis": "minimo_assoluto"
+    },
+    {
+      "channel": "activeAssetCtx",
+      "coin": "ETH",
+      "n_intervals": 1692596,
+      "p99_s": 1.406374,
+      "threshold_s": 30.0,
+      "basis": "minimo_assoluto"
+    },
+    {
+      "channel": "activeAssetCtx",
+      "coin": "HYPE",
+      "n_intervals": 1692636,
+      "p99_s": 1.407695,
+      "threshold_s": 30.0,
+      "basis": "minimo_assoluto"
+    },
+    {
+      "channel": "activeAssetCtx",
+      "coin": "SOL",
+      "n_intervals": 1692648,
+      "p99_s": 1.406767,
+      "threshold_s": 30.0,
+      "basis": "minimo_assoluto"
+    },
+    {
+      "channel": "allMids",
+      "coin": "_global",
+      "n_intervals": 342184,
+      "p99_s": 5.350267,
+      "threshold_s": 30.0,
+      "basis": "minimo_assoluto"
+    },
+    {
+      "channel": "candle",
+      "coin": "BTC",
+      "n_intervals": 1715006,
+      "p99_s": 5.16735,
+      "threshold_s": 30.0,
+      "basis": "minimo_assoluto"
+    },
+    {
+      "channel": "candle",
+      "coin": "ETH",
+      "n_intervals": 1005659,
+      "p99_s": 10.402139,
+      "threshold_s": 52.010694,
+      "basis": "p99"
+    },
+    {
+      "channel": "candle",
+      "coin": "HYPE",
+      "n_intervals": 1338481,
+      "p99_s": 6.920997,
+      "threshold_s": 34.604984,
+      "basis": "p99"
+    },
+    {
+      "channel": "candle",
+      "coin": "SOL",
+      "n_intervals": 635650,
+      "p99_s": 16.607296,
+      "threshold_s": 83.036479,
+      "basis": "p99"
+    },
+    {
+      "channel": "l2Book",
+      "coin": "BTC",
+      "n_intervals": 321491,
+      "p99_s": 5.705296,
+      "threshold_s": 30.0,
+      "basis": "minimo_assoluto"
+    },
+    {
+      "channel": "l2Book",
+      "coin": "ETH",
+      "n_intervals": 321501,
+      "p99_s": 5.706737,
+      "threshold_s": 30.0,
+      "basis": "minimo_assoluto"
+    },
+    {
+      "channel": "l2Book",
+      "coin": "HYPE",
+      "n_intervals": 321496,
+      "p99_s": 5.707777,
+      "threshold_s": 30.0,
+      "basis": "minimo_assoluto"
+    },
+    {
+      "channel": "l2Book",
+      "coin": "SOL",
+      "n_intervals": 321511,
+      "p99_s": 5.708508,
+      "threshold_s": 30.0,
+      "basis": "minimo_assoluto"
+    },
+    {
+      "channel": "trades",
+      "coin": "BTC",
+      "n_intervals": 2354167,
+      "p99_s": 4.480953,
+      "threshold_s": 30.0,
+      "basis": "minimo_assoluto"
+    },
+    {
+      "channel": "trades",
+      "coin": "ETH",
+      "n_intervals": 1269795,
+      "p99_s": 9.737007,
+      "threshold_s": 48.685036,
+      "basis": "p99"
+    },
+    {
+      "channel": "trades",
+      "coin": "HYPE",
+      "n_intervals": 1762792,
+      "p99_s": 6.074021,
+      "threshold_s": 30.370107,
+      "basis": "p99"
+    },
+    {
+      "channel": "trades",
+      "coin": "SOL",
+      "n_intervals": 742823,
+      "p99_s": 15.874732,
+      "threshold_s": 79.373661,
+      "basis": "p99"
+    }
+  ]
+}

@@ -52,6 +52,13 @@ BOOK_CHANNEL = "l2Book"
 FUNDING_CHANNEL = "activeAssetCtx"
 REST_FUNDING_CHANNEL = "backfill_funding"
 
+# Le origini possibili di una soglia di buco: definite in `catalog.derivedgaps`,
+# ri-esportate qui perche' e' da qui che le usa chi legge i dati.
+SOGLIE_CONGELATE = derivedgaps.SOGLIE_CONGELATE
+SOGLIE_FISSE = derivedgaps.SOGLIE_FISSE
+SOGLIE_MISURATE = derivedgaps.SOGLIE_MISURATE
+SOGLIE_MODI = derivedgaps.SOGLIE_MODI
+
 
 def connect(temp_dir: str, memory_limit: str = "1GB", threads: int = 1):
     """Connessione DuckDB con gli stessi vincoli del catalogo.
@@ -102,6 +109,8 @@ def unreliable_hours(con, data_dir: str, partitions: list[tuple[str, str]],
                      min_gap_s: float = derivedgaps.DEFAULT_MIN_GAP_S,
                      dates: list[str] | None = None,
                      thresholds_out: list | None = None,
+                     soglie: str = SOGLIE_CONGELATE,
+                     soglie_path: str = derivedgaps.FROZEN_PATH,
                      ) -> dict[tuple[str, str], frozenset[int]]:
     """Ore (indice orario UTC) attraversate da un buco derivato dai dati.
 
@@ -117,25 +126,43 @@ def unreliable_hours(con, data_dir: str, partitions: list[tuple[str, str]],
     sembra sana.
 
     `dates` viene passato a `sanity.build_ordered` e limita la lettura a quei
-    giorni. Il default resta l'intero storico, e con esso la soglia derivata dal
-    p99. Quando invece si legge una finestra, la soglia diventa il PAVIMENTO
-    FISSO `min_gap_s`: il p99 di una finestra si calcola sulle stesse righe di
-    cui deve giudicare la completezza, quindi sale proprio quando la raccolta e'
-    andata peggio e maschera la degradazione che dovrebbe rilevare (misurato:
-    `trades/SOL` 82,5 s sullo storico, 109,7 s su tre giorni). Le soglie usate
-    escono da `thresholds_out` con `basis = pavimento_fisso`.
+    giorni; il default e' l'intero storico.
+
+    `soglie` decide DA DOVE viene il numero, ed e' una scelta separata da quanti
+    giorni si leggono:
+
+    - `congelate` (default) — dal file versionato `gap_thresholds.json`,
+      calcolate una volta sullo storico dichiarato la' dentro. Due esecuzioni a
+      mesi di distanza sulla stessa finestra danno lo stesso risultato, e le
+      soglie di allora si recuperano con un checkout.
+    - `fisse` — `min_gap_s` per tutte le partizioni. Niente retroazione, ma
+      niente nemmeno adattamento: su una coin lenta marca ore di mercato fermo
+      (su SOL, 11 delle 24 ore della finestra provata).
+    - `misurate` — il p99 dei giorni effettivamente letti. E' la modalita' che
+      NON va usata su una finestra, ed esiste per poterla confrontare: il p99 di
+      una finestra si calcola sulle stesse righe di cui deve giudicare la
+      completezza, quindi sale proprio quando la raccolta e' andata peggio e
+      maschera la degradazione che dovrebbe rilevare (misurato: `trades/SOL`
+      82,5 s sullo storico, 109,7 s su tre giorni).
 
     `thresholds_out`, se passata, riceve le soglie effettivamente usate. Esiste
     perche' una soglia e' un numero che cambia il risultato senza comparire da
-    nessuna parte: chi restringe i giorni deve poterla leggere, non dedurla.
+    nessuna parte: chi legge un conteggio di buchi deve poterla leggere, non
+    dedurla.
     """
+    if soglie not in SOGLIE_MODI:
+        raise ValueError(f"soglie={soglie!r}: attesa una fra {SOGLIE_MODI}")
+    congelate = (derivedgaps.frozen_rows(derivedgaps.load_frozen(soglie_path),
+                                         partitions)
+                 if soglie == SOGLIE_CONGELATE else None)
     sanity.build_ordered(con, data_dir, partitions, dates)
-    soglie = derivedgaps.build_thresholds(
+    usate = derivedgaps.build_thresholds(
         con, p99_multiple=p99_multiple, min_gap_s=min_gap_s,
-        fixed_s=None if dates is None else min_gap_s,
+        fixed_s=min_gap_s if soglie == SOGLIE_FISSE else None,
+        frozen=congelate,
     )
     if thresholds_out is not None:
-        thresholds_out.extend(soglie)
+        thresholds_out.extend(usate)
     derivedgaps.build(con)
     out: dict[tuple[str, str], set[int]] = {p: set() for p in partitions}
     rows = con.execute(
