@@ -51,6 +51,18 @@ un'interruzione della raccolta: sono un canale tranquillo.
 Entrambi i numeri sono argomenti della CLI e il report stampa soglia, p99 e
 conteggio per ogni partizione: chi legge puo' dissentire senza rifare i conti.
 
+**La soglia si calcola una volta e si congela.** Tutto quello che c'e' scritto
+qui sopra descrive COME si ottiene il numero, non quando. Il quando e' una volta
+sola, con `python -m catalog.soglie`, e il risultato finisce in
+`gap_thresholds.json`, versionato. Il motivo e' che una soglia ricalcolata a
+ogni esecuzione si muove da sola insieme allo storico: fra due report a nove
+giorni di distanza quella di `trades/SOL` e' passata da 82,48 s a 80,80 s
+soltanto perche' i giorni raccolti erano diventati 20 invece di 17, e con lei
+sono cambiati i buchi trovati su finestre identiche. Il p99 e' insensibile a un
+pugno di interruzioni, ma non e' insensibile alla crescita del campione — e un
+backtest riprodotto fra sei mesi non deve dipendere da quanti dati sono arrivati
+nel frattempo.
+
 **Cosa NON fa.** Non usa la simultaneita' fra canali, che sarebbe il segnale
 piu' forte di tutti — un'interruzione della raccolta ferma tutti i canali nello
 stesso istante, una pausa di mercato no. Il rilevamento qui e' per partizione e
@@ -62,6 +74,8 @@ lo decide al posto di chi legge.
 
 from __future__ import annotations
 
+import json
+import os
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -86,8 +100,29 @@ BASIS_TOO_FEW = "pochi_intervalli"
 # Soglia imposta dall'esterno, uguale per tutte le partizioni: il p99 della
 # finestra non e' un riferimento indipendente da cio' che deve giudicare.
 BASIS_FIXED = "pavimento_fisso"
+# Soglia letta dal file congelato. Il valore stampato porta con se' la data di
+# calcolo (`congelata@2026-08-22`) perche' una soglia senza data non si sa se
+# descrive lo storico di ieri o quello di tre mesi fa.
+BASIS_FROZEN = "congelata"
 
 NS_PER_S = 1_000_000_000
+
+# Il file delle soglie congelate, versionato nel repo accanto a `config.yaml`.
+# Sta in root e non dentro `catalog/` perche' e' configurazione del sistema, non
+# codice del modulo che la scrive.
+FROZEN_FILE = "gap_thresholds.json"
+FROZEN_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), FROZEN_FILE
+)
+FROZEN_VERSION = 1
+
+# Le tre origini possibili di una soglia, in ordine di quanto e' riproducibile
+# il risultato che ne esce. Stanno qui e non in `costs.sources` perche' e'
+# `catalog` a possedere la nozione di soglia: `costs` le ri-esporta.
+SOGLIE_CONGELATE = "congelate"   # dal file versionato: stesse ovunque e sempre
+SOGLIE_FISSE = "fisse"           # `min_gap_s` per tutte le partizioni
+SOGLIE_MISURATE = "misurate"     # p99 dei giorni letti: cambia con i giorni
+SOGLIE_MODI = (SOGLIE_CONGELATE, SOGLIE_FISSE, SOGLIE_MISURATE)
 
 
 @dataclass(frozen=True)
@@ -130,16 +165,84 @@ THRESHOLD_COLUMNS = [
 ]
 
 
+def load_frozen(path: str = FROZEN_PATH) -> dict:
+    """Il file delle soglie congelate, con i campi obbligatori verificati.
+
+    Il file e' versionato nel repo: chi cambia una soglia lascia una traccia in
+    `git log`, e chi legge un risultato di sei mesi fa puo' recuperare le soglie
+    di allora facendo checkout del commit. E' l'unica differenza che conta
+    rispetto a ricalcolarle: non la precisione, la RIPRODUCIBILITA'.
+    """
+    with open(path, "r", encoding="utf-8") as fh:
+        doc = json.load(fh)
+    if doc.get("versione") != FROZEN_VERSION:
+        raise ValueError(
+            f"{path}: versione {doc.get('versione')!r}, attesa {FROZEN_VERSION}. "
+            f"Il formato e' cambiato: rigenera con `python -m catalog.soglie`."
+        )
+    for campo in ("calcolate_il", "storico", "soglie"):
+        if not doc.get(campo):
+            raise ValueError(f"{path}: manca il campo obbligatorio {campo!r}.")
+    return doc
+
+
+def frozen_rows(doc: dict, partitions: list[tuple[str, str]] | None = None
+                ) -> list[dict]:
+    """Le righe del file, filtrate sulle partizioni richieste.
+
+    Se una partizione richiesta non e' nel file, si SOLLEVA. L'alternativa —
+    ricadere sul p99 della finestra per la sola coin mancante — darebbe un
+    risultato in cui due coin sono giudicate con criteri diversi senza che
+    nessuno lo veda. Aggiungere una coin al collector significa rigenerare il
+    file, ed e' giusto che lo si scopra qui e non dal grafico.
+    """
+    giorno = str(doc["calcolate_il"])[:10]
+
+    def stampa(r: dict) -> dict:
+        # La `basis` che finisce nel report porta la data del file E il criterio
+        # con cui il numero fu ottenuto allora: "congelata" da solo direbbe che
+        # nessuno ha piu' guardato, non da dove viene.
+        out = dict(r)
+        out["basis"] = f"{BASIS_FROZEN}@{giorno} ({r['basis']})"
+        return out
+
+    per_key = {(r["channel"], r["coin"]): r for r in doc["soglie"]}
+    if partitions is None:
+        return [stampa(per_key[k]) for k in sorted(per_key)]
+    mancanti = [p for p in partitions
+                if p not in per_key and p[0] not in BACKFILL_CHANNELS]
+    if mancanti:
+        elenco = ", ".join(f"{c}/{k}" for c, k in sorted(mancanti))
+        raise ValueError(
+            f"soglie congelate assenti per {elenco} (file calcolato il "
+            f"{doc['calcolate_il']}). Rigenera con `python -m catalog.soglie "
+            f"--scrivi` dopo aver dichiarato lo storico su cui calcolarle."
+        )
+    # Ordinate come le ordina la query del percorso misurato, cosi' che due
+    # report prodotti con origini diverse si confrontino riga per riga.
+    return [stampa(per_key[p]) for p in sorted(set(partitions) & set(per_key))]
+
+
 def build_thresholds(
     con,
     p99_multiple: float = DEFAULT_P99_MULTIPLE,
     min_gap_s: float = DEFAULT_MIN_GAP_S,
     fixed_s: float | None = None,
+    frozen: list[dict] | None = None,
 ) -> list[dict]:
     """Materializza `gap_thresholds`, una riga per partizione di stream.
 
     Legge `ts_ordered` (gia' costruita da `sanity.build_ordered`): le righe
     nell'ordine di scrittura, con il `delta_ns` dal messaggio precedente.
+
+    `frozen` scavalca tutto il resto: le soglie arrivano dal file versionato
+    (`gap_thresholds.json`), calcolate una volta sullo storico dichiarato la'
+    dentro, e `ts_ordered` non viene neppure letta per costruirle. E' la
+    modalita' di default dei consumatori — backtest, `costs`, crosscheck —
+    perche' una soglia che si ricalcola a ogni esecuzione cambia da sola: fra
+    due report a nove giorni di distanza la soglia storica di `trades/SOL` e'
+    passata da 82,48 s a 80,80 s solo perche' lo storico e' cresciuto da 17 a
+    20 giorni, e con lei sono cambiati i buchi rilevati su finestre identiche.
 
     `fixed_s` scavalca il p99 e impone la stessa soglia a ogni partizione.
     Serve quando `ts_ordered` contiene solo i giorni di una finestra invece
@@ -162,6 +265,8 @@ def build_thresholds(
     I `delta_ns` negativi (passi indietro dell'orologio) non entrano nel p99:
     sarebbero durate negative. `sanity.monotonicity` li elenca gia' per esteso.
     """
+    if frozen is not None:
+        return _thresholds_from_frozen(con, frozen)
     backfill = ", ".join(repr(c) for c in sorted(BACKFILL_CHANNELS))
     if fixed_s is None:
         thr = (f"CASE WHEN n_intervals < {int(MIN_INTERVALS_FOR_P99)}"
@@ -204,6 +309,36 @@ def build_thresholds(
         f"ORDER BY channel, coin"
     ).fetchall()
     return [dict(zip(THRESHOLD_COLUMNS, r)) for r in rows]
+
+
+def _thresholds_from_frozen(con, rows: list[dict]) -> list[dict]:
+    """`gap_thresholds` dai valori del file, senza guardare `ts_ordered`.
+
+    Non e' un'ottimizzazione: e' il punto in cui la soglia smette di dipendere
+    dai dati che deve giudicare. `n_intervals` e `p99_s` restano quelli dello
+    storico su cui il file fu calcolato — sono la provenienza del numero, non
+    una misura della finestra corrente.
+    """
+    if not rows:
+        raise ValueError("nessuna soglia congelata per le partizioni richieste.")
+    valori = ", ".join(
+        f"({sql_str(r['channel'])}, {sql_str(r['coin'])}, "
+        f"{int(r['n_intervals'])}, {float(r['p99_s'])}, "
+        f"{float(r['threshold_s'])}, {sql_str(r['basis'])})"
+        for r in rows
+    )
+    con.execute(
+        f"""
+        CREATE OR REPLACE TABLE gap_thresholds AS
+        SELECT *, CAST(threshold_s * {NS_PER_S} AS BIGINT) AS threshold_ns
+        FROM (VALUES {valori})
+             AS t(channel, coin, n_intervals, p99_s, threshold_s, basis)
+        """
+    )
+    return [dict(zip(THRESHOLD_COLUMNS,
+                     (r["channel"], r["coin"], r["n_intervals"], r["p99_s"],
+                      r["threshold_s"], r["basis"])))
+            for r in rows]
 
 
 def build(con) -> int:

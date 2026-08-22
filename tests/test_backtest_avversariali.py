@@ -212,9 +212,25 @@ class TestStrategiaCasuale(unittest.TestCase):
               f"({CHI2_RIFERIMENTO_SIGMA:+.2f} sigma, chi2/gdl "
               f"{CHI2_RIFERIMENTO / CHI2_RIFERIMENTO_N:.4f}) -> la carenza di "
               f"varianza a N={self.RIPETIZIONI} e' una fluttuazione")
-        print(f"[casuale] dispersione osservata / sigma teorico "
-              f"{dev / sigma_medio:.4f} (a N={CHI2_RIFERIMENTO_N}: "
-              f"{(CHI2_RIFERIMENTO / CHI2_RIFERIMENTO_N) ** 0.5:.4f})")
+        # Una sola formula per i due N, e la formula e' radice(chi2/N): lo
+        # scarto quadratico medio degli scarti standardizzati OGNUNO COL PROPRIO
+        # sigma. Prima qui c'erano due stimatori diversi messi a confronto —
+        # sd campionaria / sigma medio a N=100, radice(chi2/N) a N=1000 — e
+        # dalla riga sembrava che la dispersione fosse passata da 0,826 a 1,009
+        # quando in parte era cambiato il modo di misurarla. I due stimatori
+        # differiscono per due motivi: il primo sottrae la media campionaria
+        # (un grado di liberta' in meno) e divide per il sigma MEDIO invece che
+        # per quello del singolo tiro, che qui varia da tiro a tiro. Su questi
+        # numeri la differenza e' piccola e resta stampata sotto, come termine
+        # di paragone dichiarato per quello che e'.
+        disp = (chi2 / self.RIPETIZIONI) ** 0.5
+        disp_rif = (CHI2_RIFERIMENTO / CHI2_RIFERIMENTO_N) ** 0.5
+        print(f"[casuale] dispersione radice(chi2/N) {disp:.4f} a "
+              f"N={self.RIPETIZIONI}  |  {disp_rif:.4f} a "
+              f"N={CHI2_RIFERIMENTO_N}")
+        print(f"[casuale] altro stimatore, non confrontabile col precedente: "
+              f"sd campionaria / sigma teorico medio {dev / sigma_medio:.4f} "
+              f"a N={self.RIPETIZIONI}")
         # Stessa forma dello shuffle: la media deve stare dentro tre errori
         # standard, dove l'errore standard viene dalla varianza NOTA della
         # passeggiata, non dai numeri appena visti.

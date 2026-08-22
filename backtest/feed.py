@@ -193,7 +193,8 @@ class ParquetFeed:
 
 
 def context(con, data_dir: str, coins: tuple[str, ...],
-            dates: list[str] | None = None
+            dates: list[str] | None = None,
+            soglie: str = sources.SOGLIE_CONGELATE,
             ) -> tuple[dict[str, FundingSeries], BlockedHours, dict]:
     """Serie di funding e ore bloccate, dalle funzioni gia' esistenti.
 
@@ -206,18 +207,19 @@ def context(con, data_dir: str, coins: tuple[str, ...],
     misurato, non supposto — perche' ricostruisce l'ordine di scrittura di tre
     canali per coin su tutto lo storico raccolto.
 
-    Limitare i giorni porta con se' il pavimento fisso di 30 s al posto della
-    soglia derivata dal p99 (vedi `costs.sources.unreliable_hours`): su una
-    coin a bassa frequenza costa ore marcate — su SOL, 11 delle 24 ore della
-    finestra provata — perche' 30 s di silenzio sui trade non distinguono un
-    mercato fermo da una raccolta interrotta. E' il verso giusto in cui
-    sbagliare, ma non e' gratis, ed e' per questo che il riepilogo stampa le
-    soglie e le ore bloccate dentro la finestra.
+    `soglie` sceglie l'origine delle soglie di buco (vedi
+    `costs.sources.unreliable_hours`). Il default sono quelle CONGELATE nel file
+    versionato: la soglia non dipende ne' dalla finestra che sta giudicando ne'
+    da quanti dati sono stati raccolti nel frattempo, quindi lo stesso backtest
+    rieseguito fra sei mesi trova gli stessi buchi. Il riepilogo stampa
+    comunque, per ogni partizione, la soglia usata e la sua provenienza: un
+    numero che cambia il risultato non puo' restare implicito.
     """
     partitions = [(ch, c) for c in sorted(coins) for ch in REQUIRED_CHANNELS]
-    soglie: list = []
+    usate: list = []
     unreliable = sources.unreliable_hours(con, data_dir, partitions,
-                                          dates=dates, thresholds_out=soglie)
+                                          dates=dates, thresholds_out=usate,
+                                          soglie=soglie)
     per_coin: dict[str, frozenset[int]] = {}
     funding: dict[str, FundingSeries] = {}
     stats: dict[str, dict] = {}
@@ -237,7 +239,7 @@ def context(con, data_dir: str, coins: tuple[str, ...],
             "ultimo_definitivo": funding[coin].last_final,
             "soglie": [
                 (r["channel"], round(r["threshold_s"], 3), r["basis"])
-                for r in soglie if r["coin"] == coin
+                for r in usate if r["coin"] == coin
             ],
         }
     return funding, BlockedHours(per_coin=per_coin), stats

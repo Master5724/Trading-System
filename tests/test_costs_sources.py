@@ -94,7 +94,8 @@ class TestBuchiDerivatiDaiDati(unittest.TestCase):
 
     def test_l_ora_col_buco_e_marcata(self):
         u = sources.unreliable_hours(self.con, self.data_dir,
-                                     [("activeAssetCtx", "TEST")])
+                                     [("activeAssetCtx", "TEST")],
+                                     soglie=sources.SOGLIE_MISURATE)
         ore = u[("activeAssetCtx", "TEST")]
         self.assertIn(H0 + 1, ore)
         self.assertNotIn(H0, ore)
@@ -104,7 +105,8 @@ class TestBuchiDerivatiDaiDati(unittest.TestCase):
         """L'ora esclusa non vale zero e non vale il rate osservato: vale
         "non lo so", e il costo la conta separatamente."""
         u = sources.unreliable_hours(self.con, self.data_dir,
-                                     [("activeAssetCtx", "TEST")])
+                                     [("activeAssetCtx", "TEST")],
+                                     soglie=sources.SOGLIE_MISURATE)
         serie = sources.funding_series(self.con, self.data_dir, "TEST",
                                        unreliable=u[("activeAssetCtx", "TEST")])
         # I campioni delle ore 0,1,2 regolano alle ore 1,2,3.
@@ -125,7 +127,8 @@ class TestBuchiDerivatiDaiDati(unittest.TestCase):
                 for h in range(3) for m in range(60)]
         write_partition(data_dir, "activeAssetCtx", "TEST", rows)
         u = sources.unreliable_hours(self.con, data_dir,
-                                     [("activeAssetCtx", "TEST")])
+                                     [("activeAssetCtx", "TEST")],
+                                     soglie=sources.SOGLIE_MISURATE)
         self.assertEqual(u[("activeAssetCtx", "TEST")], frozenset())
 
     def test_gli_snapshot_del_book_in_ore_marcate_non_vengono_usati(self):
@@ -304,7 +307,8 @@ class TestLaVerificaSaFallire(unittest.TestCase):
                 rows.append((ts, 0, ctx_payload("TEST", 0.0001)))
         write_partition(data_dir, "activeAssetCtx", "TEST", rows)
         u = sources.unreliable_hours(self.con, data_dir,
-                                     [("activeAssetCtx", "TEST")])
+                                     [("activeAssetCtx", "TEST")],
+                                     soglie=sources.SOGLIE_MISURATE)
         # H0+1 e H0+2: due regolamenti definitivi, il secondo dei quali deriva
         # dall'ora bucata H0+1.
         start, end = (H0 + 1) * NS_PER_HOUR, (H0 + 3) * NS_PER_HOUR

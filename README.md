@@ -296,6 +296,39 @@ silenzio non sono un'interruzione. Il report stampa per ogni partizione il p99
 misurato, la soglia applicata e quanti buchi ha trovato: chi non e' d'accordo
 puo' cambiarli senza rifare i conti a mano.
 
+**Le soglie sono congelate in `gap_thresholds.json`, non ricalcolate.** Il file
+e' versionato: una riga per partizione, il p99 e il numero di intervalli da cui
+la soglia esce, e la data del calcolo. Lo leggono catalogo, `costs` e backtest,
+che quindi giudicano gli stessi dati con gli stessi numeri. Il motivo e' che una
+soglia ricalcolata si muove da sola: fra due report a nove giorni di distanza
+quella di `trades/SOL` e' passata da 82,48 s a 80,80 s soltanto perche' lo
+storico era cresciuto da 17 a 20 giorni, e con lei sono cambiati i buchi
+rilevati su finestre identiche — la differenza stava in dati esterni alla
+finestra esaminata.
+
+Il file si rigenera solo a mano, e prima conviene vedere di quanto si e'
+allontanato dallo storico attuale:
+
+```bash
+# stampa lo scostamento riga per riga, non scrive
+systemd-run --user --scope -p MemoryMax=2G .venv/bin/python -m catalog.soglie \
+    --data-dir /home/ubuntu/hl-data/mainnet
+# lo stesso comando con --scrivi sovrascrive il file
+```
+
+Congelare rende la soglia riproducibile, non giusta per sempre: se una coin
+cambia regime davvero, la soglia congelata resta larga e smette di vedere buchi
+che ora sarebbero anomali. E' quel comando, lanciato ogni tanto, a dirlo. Se il
+collector inizia a raccogliere una coin che nel file non c'e', catalogo e
+backtest si fermano invece di inventarsi una soglia — e `tests/
+test_soglie_congelate.py` diventa rosso prima ancora, perche' confronta il file
+con le coin di `config.mainnet.yaml`.
+
+Restano raggiungibili le altre due origini, per confronto: `--soglie misurate`
+ricalcola sui giorni letti (da non usare su una finestra: il p99 di una finestra
+degradata sale e maschera la degradazione) e `--soglie fisse` impone `--gap-min-s`
+a ogni partizione.
+
 **`low_volume` si alza solo sui canali a cadenza fissa.** `l2Book`,
 `activeAssetCtx` e `allMids` arrivano a intervalli regolari qualunque cosa
 faccia il mercato: un'ora sotto il 90% della mediana e' un'anomalia di
@@ -342,6 +375,12 @@ modello di costo importato da `costs/` senza duplicarne una riga.
     --coins BTC --from 2026-08-16T00:00 --to 2026-08-17T00:00 \
     --strategy random --out /tmp/bt
 ```
+
+Le soglie di buco arrivano da `gap_thresholds.json` (`--soglie congelate`, il
+default): il riepilogo stampa per ogni coin la soglia usata e la data in cui fu
+calcolata. `--soglie fisse` riproduce il comportamento precedente — pavimento a
+30 s per tutte le partizioni — e sulla finestra di 24 ore del 16 agosto costa 11
+ore di SOL marcate che le soglie congelate non marcano.
 
 La strategia di default e' `flat` e non manda ordini: le altre (`random`,
 `always_long`, `maker`) sono **fittizie**, servono a misurare il motore. Il

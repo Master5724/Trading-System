@@ -21,6 +21,15 @@ Si stampano anche i progressivi a 100, 200 e 500: e' la stessa famiglia di semi
 del test (100+i, 200+i), quindi il primo blocco coincide riga per riga con
 quello che stampa la suite.
 
+**Due unita', non due misure.** Per ogni N escono sia il chi quadro ridotto sia
+la dispersione, che ne e' la radice: la domanda originale era posta in unita' di
+deviazione standard ("0,826 volte il sigma teorico") e il chi quadro sta in
+unita' di varianza. Un deficit del 33% sulla varianza e' un deficit del 18%
+sulla dispersione, ed e' lo stesso fatto detto due volte. Accanto compare lo
+stimatore alternativo (sd campionaria / sigma medio) per quantificare quanto i
+due modi di misurare la dispersione si discostano fra loro, che e' un'altra
+cosa ancora dal discostamento da 1.
+
 Costa un centinaio di secondi di CPU e nessun accesso ai dati: mercato
 sintetico, tutto in memoria. Per questo sta qui e non nella suite.
 
@@ -73,11 +82,13 @@ def tiro(seme_mercato: int, seme_strategia: int) -> tuple[float, float, float]:
 def main(argv: list[str]) -> int:
     n_max = int(argv[1]) if len(argv) > 1 else 1000
     t0 = time.monotonic()
-    z, z_oss = [], []
+    z, z_oss, scarti, sigmi = [], [], [], []
     for i in range(1, n_max + 1):
         scarto, sigma, sigma_oss = tiro(100 + i, 200 + i)
         z.append(scarto / sigma)
         z_oss.append(scarto / sigma_oss)
+        scarti.append(scarto)
+        sigmi.append(sigma)
     for n in [t for t in TAPPE if t < n_max] + [n_max]:
         chi2 = sum(x * x for x in z[:n])
         chi2_oss = sum(x * x for x in z_oss[:n])
@@ -86,6 +97,25 @@ def main(argv: list[str]) -> int:
               f"chi2/gdl con varianza misurata {chi2_oss / n:.4f}  "
               f"media z {st.mean(z[:n]):+.4f} ({st.mean(z[:n]) * n ** 0.5:+.3f} "
               f"errori standard)")
+        # La stessa cosa in unita' di dispersione invece che di varianza: e' la
+        # radice delle prime due colonne. Serve perche' la domanda di partenza
+        # era posta cosi' — "0,826 volte il sigma teorico" — e un rapporto fra
+        # deviazioni standard e' la radice del rapporto fra varianze, non il
+        # rapporto stesso: 0,6697 di chi2/gdl SONO 0,8184 di dispersione, e
+        # confondere i due fa sembrare la carenza il doppio di quello che e'.
+        #
+        # La terza colonna e' lo stimatore alternativo (sd campionaria degli
+        # scarti / media dei sigma teorici). Sta qui per far vedere DI QUANTO
+        # differisce dal primo: sottrae la media campionaria e usa un sigma solo
+        # per tutti i tiri, quindi non e' la stessa quantita' e non va messa a
+        # confronto con la prima colonna a un altro N.
+        media = st.mean(scarti[:n])
+        dev = st.stdev(scarti[:n]) if n > 1 else 0.0
+        sigma_medio = st.mean(sigmi[:n])
+        print(f"        dispersione radice(chi2/N) {(chi2 / n) ** 0.5:.4f}  "
+              f"con varianza misurata {(chi2_oss / n) ** 0.5:.4f}  "
+              f"sd campionaria / sigma medio {dev / sigma_medio:.4f}  "
+              f"(media degli scarti {media:+.4f}, sigma medio {sigma_medio:.4f})")
     print(f"tempo {time.monotonic() - t0:.1f}s")
     return 0
 
